@@ -126,7 +126,7 @@ class PDFSidebar {
    * @param {number} view - The sidebar view that should become visible,
    *                        must be one of the values in {SidebarView}.
    */
-  setInitialView(view) {
+  setInitialView(view = SidebarView.NONE) {
     if (this.isInitialViewSet) {
       return;
     }
@@ -138,7 +138,7 @@ class PDFSidebar {
       // immediately closing it would be bad UX.
       return;
     }
-    var isViewPreserved = (view === this.visibleView);
+    let isViewPreserved = (view === this.visibleView);
     this.switchView(view, /* forceOpen */ true);
 
     if (isViewPreserved) {
@@ -159,8 +159,8 @@ class PDFSidebar {
       this.close();
       return;
     }
-    var isViewChanged = (view !== this.active);
-    var shouldForceRendering = false;
+    let isViewChanged = (view !== this.active);
+    let shouldForceRendering = false;
 
     switch (view) {
       case SidebarView.THUMBS:
@@ -290,19 +290,18 @@ class PDFSidebar {
    * @private
    */
   _updateThumbnailViewer() {
-    var pdfViewer = this.pdfViewer;
-    var thumbnailViewer = this.pdfThumbnailViewer;
+    let { pdfViewer, pdfThumbnailViewer, } = this;
 
     // Use the rendered pages to set the corresponding thumbnail images.
-    var pagesCount = pdfViewer.pagesCount;
-    for (var pageIndex = 0; pageIndex < pagesCount; pageIndex++) {
-      var pageView = pdfViewer.getPageView(pageIndex);
+    let pagesCount = pdfViewer.pagesCount;
+    for (let pageIndex = 0; pageIndex < pagesCount; pageIndex++) {
+      let pageView = pdfViewer.getPageView(pageIndex);
       if (pageView && pageView.renderingState === RenderingStates.FINISHED) {
-        var thumbnailView = thumbnailViewer.getThumbnail(pageIndex);
+        let thumbnailView = pdfThumbnailViewer.getThumbnail(pageIndex);
         thumbnailView.setImage(pageView);
       }
     }
-    thumbnailViewer.scrollThumbnailIntoView(pdfViewer.currentPageNumber);
+    pdfThumbnailViewer.scrollThumbnailIntoView(pdfViewer.currentPageNumber);
   }
 
   /**
@@ -347,7 +346,7 @@ class PDFSidebar {
       return;
     }
 
-    var removeNotification = (view) => {
+    let removeNotification = (view) => {
       switch (view) {
         case SidebarView.OUTLINE:
           this.outlineButton.classList.remove(UI_NOTIFICATION_CLASS);
@@ -407,7 +406,7 @@ class PDFSidebar {
 
     // Disable/enable views.
     this.eventBus.on('outlineloaded', (evt) => {
-      var outlineCount = evt.outlineCount;
+      let outlineCount = evt.outlineCount;
 
       this.outlineButton.disabled = !outlineCount;
 
@@ -421,17 +420,31 @@ class PDFSidebar {
     });
 
     this.eventBus.on('attachmentsloaded', (evt) => {
-      var attachmentsCount = evt.attachmentsCount;
+      if (evt.attachmentsCount) {
+        this.attachmentsButton.disabled = false;
 
-      this.attachmentsButton.disabled = !attachmentsCount;
-
-      if (attachmentsCount) {
         this._showUINotification(SidebarView.ATTACHMENTS);
-      } else if (this.active === SidebarView.ATTACHMENTS) {
-        // If the attachment view was opened during document load, switch away
-        // from it if it turns out that the document has no attachments.
-        this.switchView(SidebarView.THUMBS);
+        return;
       }
+
+      // Attempt to avoid temporarily disabling, and switching away from, the
+      // attachment view for documents that do not contain proper attachments
+      // but *only* FileAttachment annotations. Hence we defer those operations
+      // slightly to allow time for parsing any FileAttachment annotations that
+      // may be present on the *initially* rendered page of the document.
+      Promise.resolve().then(() => {
+        if (this.attachmentsView.hasChildNodes()) {
+          // FileAttachment annotations were appended to the attachment view.
+          return;
+        }
+        this.attachmentsButton.disabled = true;
+
+        if (this.active === SidebarView.ATTACHMENTS) {
+          // If the attachment view was opened during document load, switch away
+          // from it if it turns out that the document has no attachments.
+          this.switchView(SidebarView.THUMBS);
+        }
+      });
     });
 
     // Update the thumbnailViewer, if visible, when exiting presentation mode.

@@ -95,8 +95,15 @@ class PDFThumbnailViewer {
   }
 
   set pagesRotation(rotation) {
+    if (!(typeof rotation === 'number' && rotation % 90 === 0)) {
+      throw new Error('Invalid thumbnails rotation angle.');
+    }
+    if (!this.pdfDocument) {
+      return;
+    }
     this._pagesRotation = rotation;
-    for (let i = 0, l = this._thumbnails.length; i < l; i++) {
+
+    for (let i = 0, ii = this._thumbnails.length; i < ii; i++) {
       this._thumbnails[i].update(rotation);
     }
   }
@@ -126,10 +133,10 @@ class PDFThumbnailViewer {
 
     this.pdfDocument = pdfDocument;
     if (!pdfDocument) {
-      return Promise.resolve();
+      return;
     }
 
-    return pdfDocument.getPage(1).then((firstPage) => {
+    pdfDocument.getPage(1).then((firstPage) => {
       let pagesCount = pdfDocument.numPages;
       let viewport = firstPage.getViewport(1.0);
       for (let pageNum = 1; pageNum <= pagesCount; ++pageNum) {
@@ -144,6 +151,8 @@ class PDFThumbnailViewer {
         });
         this._thumbnails.push(thumbnail);
       }
+    }).catch((reason) => {
+      console.error('Unable to initialize thumbnail viewer', reason);
     });
   }
 
@@ -198,6 +207,10 @@ class PDFThumbnailViewer {
       thumbView.setPdfPage(pdfPage);
       this._pagesRequests[pageNumber] = null;
       return pdfPage;
+    }).catch((reason) => {
+      console.error('Unable to get page for thumb view', reason);
+      // Page error -- there is nothing can be done.
+      this._pagesRequests[pageNumber] = null;
     });
     this._pagesRequests[pageNumber] = promise;
     return promise;

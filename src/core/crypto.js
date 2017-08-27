@@ -14,7 +14,7 @@
  */
 
 import {
-  assert, bytesToString, error, isInt, PasswordException, PasswordResponses,
+  bytesToString, FormatError, isInt, PasswordException, PasswordResponses,
   stringToBytes, utf8StringToString, warn
 } from '../shared/util';
 import { isDict, isName, Name } from './primitives';
@@ -1858,14 +1858,14 @@ var CipherTransformFactory = (function CipherTransformFactoryClosure() {
   function CipherTransformFactory(dict, fileId, password) {
     var filter = dict.get('Filter');
     if (!isName(filter, 'Standard')) {
-      error('unknown encryption method');
+      throw new FormatError('unknown encryption method');
     }
     this.dict = dict;
     var algorithm = dict.get('V');
     if (!isInt(algorithm) ||
         (algorithm !== 1 && algorithm !== 2 && algorithm !== 4 &&
         algorithm !== 5)) {
-      error('unsupported encryption algorithm');
+      throw new FormatError('unsupported encryption algorithm');
     }
     this.algorithm = algorithm;
     var keyLength = dict.get('Length');
@@ -1892,7 +1892,7 @@ var CipherTransformFactory = (function CipherTransformFactoryClosure() {
     }
     if (!isInt(keyLength) ||
         keyLength < 40 || (keyLength % 8) !== 0) {
-      error('invalid key length');
+      throw new FormatError('invalid key length');
     }
 
     // prepare keys
@@ -1997,7 +1997,9 @@ var CipherTransformFactory = (function CipherTransformFactoryClosure() {
   }
 
   function buildCipherConstructor(cf, name, num, gen, key) {
-    assert(isName(name), 'Invalid crypt filter name.');
+    if (!isName(name)) {
+      throw new FormatError('Invalid crypt filter name.');
+    }
     var cryptFilter = cf.get(name.name);
     var cfm;
     if (cryptFilter !== null && cryptFilter !== undefined) {
@@ -2023,7 +2025,7 @@ var CipherTransformFactory = (function CipherTransformFactoryClosure() {
         return new AES256Cipher(key);
       };
     }
-    error('Unknown crypto method');
+    throw new FormatError('Unknown crypto method');
   }
 
   CipherTransformFactory.prototype = {

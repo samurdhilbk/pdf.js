@@ -14,9 +14,21 @@
  */
 
 import {
-  error, log2, readInt8, readUint16, readUint32, shadow
+  log2, readInt8, readUint16, readUint32, shadow
 } from '../shared/util';
 import { ArithmeticDecoder } from './arithmetic_decoder';
+
+let Jbig2Error = (function Jbig2ErrorClosure() {
+  function Jbig2Error(msg) {
+    this.message = 'JBIG2 error: ' + msg;
+  }
+
+  Jbig2Error.prototype = new Error();
+  Jbig2Error.prototype.name = 'Jbig2Error';
+  Jbig2Error.constructor = Jbig2Error;
+
+  return Jbig2Error;
+})();
 
 var Jbig2Image = (function Jbig2ImageClosure() {
   // Utility data structures
@@ -99,7 +111,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
   var SegmentTypes = [
     'SymbolDictionary', null, null, null, 'IntermediateTextRegion', null,
     'ImmediateTextRegion', 'ImmediateLosslessTextRegion', null, null, null,
-    null, null, null, null, null, 'patternDictionary', null, null, null,
+    null, null, null, null, null, 'PatternDictionary', null, null, null,
     'IntermediateHalftoneRegion', null, 'ImmediateHalftoneRegion',
     'ImmediateLosslessHalftoneRegion', null, null, null, null, null, null, null,
     null, null, null, null, null, 'IntermediateGenericRegion', null,
@@ -194,7 +206,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
   function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at,
                         decodingContext) {
     if (mmr) {
-      error('JBIG2 error: MMR encoding is not supported');
+      throw new Jbig2Error('MMR encoding is not supported');
     }
 
     // Use optimized version for the most common case
@@ -361,7 +373,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
         var sltp = decoder.readBit(contexts, pseudoPixelContext);
         ltp ^= sltp;
         if (ltp) {
-          error('JBIG2 error: prediction is not supported');
+          throw new Jbig2Error('prediction is not supported');
         }
       }
       var row = new Uint8Array(width);
@@ -403,7 +415,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                                   refinementTemplateIndex, refinementAt,
                                   decodingContext) {
     if (huffman) {
-      error('JBIG2 error: huffman is not supported');
+      throw new Jbig2Error('huffman is not supported');
     }
 
     var newSymbols = [];
@@ -490,7 +502,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                             refinementTemplateIndex, refinementAt,
                             decodingContext) {
     if (huffman) {
-      error('JBIG2 error: huffman is not supported');
+      throw new Jbig2Error('huffman is not supported');
     }
 
     // Prepare bitmap
@@ -566,8 +578,8 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                 }
                 break;
               default:
-                error('JBIG2 error: operator ' + combinationOperator +
-                      ' is not supported');
+                throw new Jbig2Error(
+                  `operator ${combinationOperator} is not supported`);
             }
           }
           currentS += symbolHeight - 1;
@@ -590,8 +602,8 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                 }
                 break;
               default:
-                error('JBIG2 error: operator ' + combinationOperator +
-                      ' is not supported');
+                throw new Jbig2Error(
+                  `operator ${combinationOperator} is not supported`);
             }
           }
           currentS += symbolWidth - 1;
@@ -607,13 +619,155 @@ var Jbig2Image = (function Jbig2ImageClosure() {
     return bitmap;
   }
 
+  function decodePatternDictionary(mmr, patternWidth, patternHeight,
+                                   maxPatternIndex, template, decodingContext) {
+    let at = [];
+    at.push({
+      x: -patternWidth,
+      y: 0,
+    });
+    if (template === 0) {
+      at.push({
+        x: -3,
+        y: -1,
+      });
+      at.push({
+        x: 2,
+        y: -2,
+      });
+      at.push({
+        x: -2,
+        y: -2,
+      });
+    }
+    let collectiveWidth = (maxPatternIndex + 1) * patternWidth;
+    let collectiveBitmap = decodeBitmap(mmr, collectiveWidth, patternHeight,
+                                        template, false, null, at,
+                                        decodingContext);
+    // Divide collective bitmap into patterns.
+    let patterns = [], i = 0, patternBitmap, xMin, xMax, y;
+    while (i <= maxPatternIndex) {
+      patternBitmap = [];
+      xMin = patternWidth * i;
+      xMax = xMin + patternWidth;
+      for (y = 0; y < patternHeight; y++) {
+        patternBitmap.push(collectiveBitmap[y].subarray(xMin, xMax));
+      }
+      patterns.push(patternBitmap);
+      i++;
+    }
+    return patterns;
+  }
+
+  function decodeHalftoneRegion(mmr, patterns, template, regionWidth,
+                                regionHeight, defaultPixelValue, enableSkip,
+                                combinationOperator, gridWidth, gridHeight,
+                                gridOffsetX, gridOffsetY, gridVectorX,
+                                gridVectorY, decodingContext) {
+    let skip = null;
+    if (enableSkip) {
+      throw new Jbig2Error('skip is not supported');
+    }
+    if (combinationOperator !== 0) {
+      throw new Jbig2Error('operator ' + combinationOperator +
+        ' is not supported in halftone region');
+    }
+
+    // Prepare bitmap.
+    let regionBitmap = [];
+    let i, j, row;
+    for (i = 0; i < regionHeight; i++) {
+      row = new Uint8Array(regionWidth);
+      if (defaultPixelValue) {
+        for (j = 0; j < regionWidth; j++) {
+          row[j] = defaultPixelValue;
+        }
+      }
+      regionBitmap.push(row);
+    }
+
+    let numberOfPatterns = patterns.length;
+    let pattern0 = patterns[0];
+    let patternWidth = pattern0[0].length, patternHeight = pattern0.length;
+    let bitsPerValue = log2(numberOfPatterns);
+    let at = [];
+    at.push({
+      x: (template <= 1) ? 3 : 2,
+      y: -1,
+    });
+    if (template === 0) {
+      at.push({
+        x: -3,
+        y: -1,
+      });
+      at.push({
+        x: 2,
+        y: -2,
+      });
+      at.push({
+        x: -2,
+        y: -2,
+      });
+    }
+    // Annex C. Gray-scale Image Decoding Procedure.
+    let grayScaleBitPlanes = [];
+    for (i = bitsPerValue - 1; i >= 0; i--) {
+      grayScaleBitPlanes[i] = decodeBitmap(mmr, gridWidth, gridHeight,
+                                           template, false, skip, at,
+                                           decodingContext);
+    }
+    // 6.6.5.2 Rendering the patterns.
+    let mg, ng, bit, patternIndex, patternBitmap, x, y, patternRow, regionRow;
+    for (mg = 0; mg < gridHeight; mg++) {
+      for (ng = 0; ng < gridWidth; ng++) {
+        bit = 0;
+        patternIndex = 0;
+        for (j = bitsPerValue - 1; j >= 0; j--) {
+          bit = grayScaleBitPlanes[j][mg][ng] ^ bit; // Gray decoding
+          patternIndex |= bit << j;
+        }
+        patternBitmap = patterns[patternIndex];
+        x = (gridOffsetX + mg * gridVectorY + ng * gridVectorX) >> 8;
+        y = (gridOffsetY + mg * gridVectorX - ng * gridVectorY) >> 8;
+        // Draw patternBitmap at (x, y).
+        if (x >= 0 && x + patternWidth <= regionWidth && y >= 0 &&
+            y + patternHeight <= regionHeight) {
+          for (i = 0; i < patternHeight; i++) {
+            regionRow = regionBitmap[y + i];
+            patternRow = patternBitmap[i];
+            for (j = 0; j < patternWidth; j++) {
+              regionRow[x + j] |= patternRow[j];
+            }
+          }
+        } else {
+          let regionX, regionY;
+          for (i = 0; i < patternHeight; i++) {
+            regionY = y + i;
+            if (regionY < 0 || regionY >= regionHeight) {
+              continue;
+            }
+            regionRow = regionBitmap[regionY];
+            patternRow = patternBitmap[i];
+            for (j = 0; j < patternWidth; j++) {
+              regionX = x + j;
+              if (regionX >= 0 && regionX < regionWidth) {
+                regionRow[regionX] |= patternRow[j];
+              }
+            }
+          }
+        }
+      }
+    }
+    return regionBitmap;
+  }
+
   function readSegmentHeader(data, start) {
     var segmentHeader = {};
     segmentHeader.number = readUint32(data, start);
     var flags = data[start + 4];
     var segmentType = flags & 0x3F;
     if (!SegmentTypes[segmentType]) {
-      error('JBIG2 error: invalid segment type: ' + segmentType);
+      throw new Jbig2Error('invalid segment type: ' + segmentType);
     }
     segmentHeader.type = segmentType;
     segmentHeader.typeName = SegmentTypes[segmentType];
@@ -633,7 +787,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
         retainBits.push(data[position++]);
       }
     } else if (referredFlags === 5 || referredFlags === 6) {
-      error('JBIG2 error: invalid referred-to flags');
+      throw new Jbig2Error('invalid referred-to flags');
     }
 
     segmentHeader.retainBits = retainBits;
@@ -687,10 +841,10 @@ var Jbig2Image = (function Jbig2ImageClosure() {
           }
         }
         if (segmentHeader.length === 0xFFFFFFFF) {
-          error('JBIG2 error: segment end was not found');
+          throw new Jbig2Error('segment end was not found');
         }
       } else {
-        error('JBIG2 error: invalid unknown segment length');
+        throw new Jbig2Error('invalid unknown segment length');
       }
     }
     segmentHeader.headerEnd = position;
@@ -834,9 +988,47 @@ var Jbig2Image = (function Jbig2ImageClosure() {
         position += 4;
         // TODO 7.4.3.1.7 Symbol ID Huffman table decoding
         if (textRegion.huffman) {
-          error('JBIG2 error: huffman is not supported');
+          throw new Jbig2Error('huffman is not supported');
         }
         args = [textRegion, header.referredTo, data, position, end];
+        break;
+      case 16: // PatternDictionary
+        // 7.4.4. Pattern dictionary segment syntax
+        let patternDictionary = {};
+        let patternDictionaryFlags = data[position++];
+        patternDictionary.mmr = !!(patternDictionaryFlags & 1);
+        patternDictionary.template = (patternDictionaryFlags >> 1) & 3;
+        patternDictionary.patternWidth = data[position++];
+        patternDictionary.patternHeight = data[position++];
+        patternDictionary.maxPatternIndex = readUint32(data, position);
+        position += 4;
+        args = [patternDictionary, header.number, data, position, end];
+        break;
+      case 22: // ImmediateHalftoneRegion
+      case 23: // ImmediateLosslessHalftoneRegion
+        // 7.4.5 Halftone region segment syntax
+        let halftoneRegion = {};
+        halftoneRegion.info = readRegionSegmentInformation(data, position);
+        position += RegionSegmentInformationFieldLength;
+        let halftoneRegionFlags = data[position++];
+        halftoneRegion.mmr = !!(halftoneRegionFlags & 1);
+        halftoneRegion.template = (halftoneRegionFlags >> 1) & 3;
+        halftoneRegion.enableSkip = !!(halftoneRegionFlags & 8);
+        halftoneRegion.combinationOperator = (halftoneRegionFlags >> 4) & 7;
+        halftoneRegion.defaultPixelValue = (halftoneRegionFlags >> 7) & 1;
+        halftoneRegion.gridWidth = readUint32(data, position);
+        position += 4;
+        halftoneRegion.gridHeight = readUint32(data, position);
+        position += 4;
+        halftoneRegion.gridOffsetX = readUint32(data, position) & 0xFFFFFFFF;
+        position += 4;
+        halftoneRegion.gridOffsetY = readUint32(data, position) & 0xFFFFFFFF;
+        position += 4;
+        halftoneRegion.gridVectorX = readUint16(data, position);
+        position += 2;
+        halftoneRegion.gridVectorY = readUint16(data, position);
+        position += 2;
+        args = [halftoneRegion, header.referredTo, data, position, end];
         break;
       case 38: // ImmediateGenericRegion
       case 39: // ImmediateLosslessGenericRegion
@@ -891,8 +1083,8 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                // are comments and can be ignored.
         break;
       default:
-        error('JBIG2 error: segment type ' + header.typeName + '(' +
-              header.type + ') is not implemented');
+        throw new Jbig2Error(`segment type ${header.typeName}(${header.type})` +
+                             ' is not implemented');
     }
     var callbackName = 'on' + header.typeName;
     if (callbackName in visitor) {
@@ -912,7 +1104,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
         data[position + 2] !== 0x42 || data[position + 3] !== 0x32 ||
         data[position + 4] !== 0x0D || data[position + 5] !== 0x0A ||
         data[position + 6] !== 0x1A || data[position + 7] !== 0x0A) {
-      error('JBIG2 error: invalid header');
+      throw new Jbig2Error('invalid header');
     }
     var header = {};
     position += 8;
@@ -923,7 +1115,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
       position += 4;
     }
     readSegments(header, data, position, end); // segments
-    error('Not implemented');
+    throw new Error('Not implemented');
     // processSegments(segments, new SimpleSegmentVisitor());
   }
 
@@ -943,7 +1135,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
     onPageInformation: function SimpleSegmentVisitor_onPageInformation(info) {
       this.currentPageInfo = info;
       var rowSize = (info.width + 7) >> 3;
-      var buffer = new Uint8Array(rowSize * info.height);
+      var buffer = new Uint8ClampedArray(rowSize * info.height);
       // The contents of ArrayBuffers are initialized to 0.
       // Fill the buffer with 0xFF only if info.defaultPixelValue is set
       if (info.defaultPixelValue) {
@@ -999,8 +1191,8 @@ var Jbig2Image = (function Jbig2ImageClosure() {
           }
           break;
         default:
-          error('JBIG2 error: operator ' + combinationOperator +
-                ' is not supported');
+          throw new Jbig2Error(
+            `operator ${combinationOperator} is not supported`);
       }
     },
     onImmediateGenericRegion:
@@ -1024,7 +1216,7 @@ var Jbig2Image = (function Jbig2ImageClosure() {
                                                        data, start, end) {
       var huffmanTables;
       if (dictionary.huffman) {
-        error('JBIG2 error: huffman is not supported');
+        throw new Jbig2Error('huffman is not supported');
       }
 
       // Combines exported symbols from all referred segments
@@ -1073,6 +1265,32 @@ var Jbig2Image = (function Jbig2ImageClosure() {
     onImmediateLosslessTextRegion:
       function SimpleSegmentVisitor_onImmediateLosslessTextRegion() {
       this.onImmediateTextRegion.apply(this, arguments);
+    },
+    onPatternDictionary(dictionary, currentSegment, data, start, end) {
+      let patterns = this.patterns;
+      if (!patterns) {
+        this.patterns = patterns = {};
+      }
+      let decodingContext = new DecodingContext(data, start, end);
+      patterns[currentSegment] = decodePatternDictionary(dictionary.mmr,
+        dictionary.patternWidth, dictionary.patternHeight,
+        dictionary.maxPatternIndex, dictionary.template, decodingContext);
+    },
+    onImmediateHalftoneRegion(region, referredSegments, data, start, end) {
+      // HalftoneRegion refers to exactly one PatternDictionary.
+      let patterns = this.patterns[referredSegments[0]];
+      let regionInfo = region.info;
+      let decodingContext = new DecodingContext(data, start, end);
+      let bitmap = decodeHalftoneRegion(region.mmr, patterns,
+        region.template, regionInfo.width, regionInfo.height,
+        region.defaultPixelValue, region.enableSkip, region.combinationOperator,
+        region.gridWidth, region.gridHeight, region.gridOffsetX,
+        region.gridOffsetY, region.gridVectorX, region.gridVectorY,
+        decodingContext);
+      this.drawBitmap(regionInfo, bitmap);
+    },
+    onImmediateLosslessHalftoneRegion() {
+      this.onImmediateHalftoneRegion.apply(this, arguments);
     },
   };
 

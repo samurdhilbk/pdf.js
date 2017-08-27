@@ -12,15 +12,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals global, process, __pdfjsdev_webpack__ */
 
 import './compatibility';
-import { ReadableStream } from '../../external/streams/streams-lib';
-
-var globalScope =
-  (typeof window !== 'undefined' && window.Math === Math) ? window :
-  (typeof global !== 'undefined' && global.Math === Math) ? global :
-  (typeof self !== 'undefined' && self.Math === Math) ? self : this;
+import { ReadableStream } from './streams_polyfill';
 
 var FONT_IDENTITY_MATRIX = [0.001, 0, 0, 0.001, 0, 0];
 
@@ -288,27 +282,13 @@ function deprecated(details) {
   console.log('Deprecated API usage: ' + details);
 }
 
-// Fatal errors that should trigger the fallback UI and halt execution by
-// throwing an exception.
-function error(msg) {
-  if (verbosity >= VERBOSITY_LEVELS.errors) {
-    console.log('Error: ' + msg);
-    console.log(backtrace());
-  }
+function unreachable(msg) {
   throw new Error(msg);
-}
-
-function backtrace() {
-  try {
-    throw new Error();
-  } catch (e) {
-    return e.stack ? e.stack.split('\n').slice(2).join('\n') : '';
-  }
 }
 
 function assert(cond, msg) {
   if (!cond) {
-    error(msg);
+    unreachable(msg);
   }
 }
 
@@ -497,6 +477,36 @@ var XRefParseException = (function XRefParseExceptionClosure() {
   XRefParseException.constructor = XRefParseException;
 
   return XRefParseException;
+})();
+
+/**
+ * Error caused during parsing PDF data.
+ */
+let FormatError = (function FormatErrorClosure() {
+  function FormatError(msg) {
+    this.message = msg;
+  }
+
+  FormatError.prototype = new Error();
+  FormatError.prototype.name = 'FormatError';
+  FormatError.constructor = FormatError;
+
+  return FormatError;
+})();
+
+/**
+ * Error used to indicate task cancellation.
+ */
+let AbortException = (function AbortExceptionClosure() {
+  function AbortException(msg) {
+    this.name = 'AbortException';
+    this.message = msg;
+  }
+
+  AbortException.prototype = new Error();
+  AbortException.constructor = AbortException;
+
+  return AbortException;
 })();
 
 var NullCharactersRegExp = /\x00/g;
@@ -1091,11 +1101,8 @@ function isSpace(ch) {
 }
 
 function isNodeJS() {
-  // The if below protected by __pdfjsdev_webpack__ check from webpack parsing.
-  if (typeof __pdfjsdev_webpack__ === 'undefined') {
-    return typeof process === 'object' && process + '' === '[object process]';
-  }
-  return false;
+  // eslint-disable-next-line no-undef
+  return typeof process === 'object' && process + '' === '[object process]';
 }
 
 /**
@@ -1224,6 +1231,22 @@ function resolveCall(fn, args, thisArg = null) {
   });
 }
 
+function wrapReason(reason) {
+  if (typeof reason !== 'object') {
+    return reason;
+  }
+  switch (reason.name) {
+    case 'AbortException':
+      return new AbortException(reason.message);
+    case 'MissingPDFException':
+      return new MissingPDFException(reason.message);
+    case 'UnexpectedResponseException':
+      return new UnexpectedResponseException(reason.message, reason.status);
+    default:
+      return new UnknownErrorException(reason.message, reason.details);
+  }
+}
+
 function resolveOrReject(capability, success, reason) {
   if (success) {
     capability.resolve();
@@ -1261,12 +1284,12 @@ function MessageHandler(sourceName, targetName, comObj) {
         let callback = callbacksCapabilities[callbackId];
         delete callbacksCapabilities[callbackId];
         if ('error' in data) {
-          callback.reject(data.error);
+          callback.reject(wrapReason(data.error));
         } else {
           callback.resolve(data.data);
         }
       } else {
-        error('Cannot resolve callback ' + callbackId);
+        throw new Error(`Cannot resolve callback ${callbackId}`);
       }
     } else if (data.action in ah) {
       let action = ah[data.action];
@@ -1302,7 +1325,7 @@ function MessageHandler(sourceName, targetName, comObj) {
         action[0].call(action[1], data.data);
       }
     } else {
-      error('Unknown action from worker: ' + data.action);
+      throw new Error(`Unknown action from worker: ${data.action}`);
     }
   };
   comObj.addEventListener('message', this._onComObjOnMessage);
@@ -1312,7 +1335,7 @@ MessageHandler.prototype = {
   on(actionName, handler, scope) {
     var ah = this.actionHandler;
     if (ah[actionName]) {
-      error('There is already an actionName called "' + actionName + '"');
+      throw new Error(`There is already an actionName called "${actionName}"`);
     }
     ah[actionName] = [handler, scope];
   },
@@ -1433,13 +1456,17 @@ MessageHandler.prototype = {
     let targetName = data.sourceName;
     let capability = createPromiseCapability();
 
-    let sendStreamRequest = ({ stream, chunk, success, reason, }) => {
-      this.comObj.postMessage({ sourceName, targetName, stream, streamId,
-                                chunk, success, reason, });
+    let sendStreamRequest = ({ stream, chunk, transfers,
+                               success, reason, }) => {
+      this.postMessage({ sourceName, targetName, stream, streamId,
+                         chunk, success, reason, }, transfers);
     };
 
     let streamSink = {
-      enqueue(chunk, size = 1) {
+      enqueue(chunk, size = 1, transfers) {
+        if (this.isCancelled) {
+          return;
+        }
         let lastDesiredSize = this.desiredSize;
         this.desiredSize -= size;
         // Enqueue decreases the desiredSize property of sink,
@@ -1449,21 +1476,30 @@ MessageHandler.prototype = {
           this.sinkCapability = createPromiseCapability();
           this.ready = this.sinkCapability.promise;
         }
-        sendStreamRequest({ stream: 'enqueue', chunk, });
+        sendStreamRequest({ stream: 'enqueue', chunk, transfers, });
       },
 
       close() {
+        if (this.isCancelled) {
+          return;
+        }
+        this.isCancelled = true;
         sendStreamRequest({ stream: 'close', });
         delete self.streamSinks[streamId];
       },
 
       error(reason) {
+        if (this.isCancelled) {
+          return;
+        }
+        this.isCancelled = true;
         sendStreamRequest({ stream: 'error', reason, });
       },
 
       sinkCapability: capability,
       onPull: null,
       onCancel: null,
+      isCancelled: false,
       desiredSize,
       ready: null,
     };
@@ -1505,11 +1541,11 @@ MessageHandler.prototype = {
     switch (data.stream) {
       case 'start_complete':
         resolveOrReject(this.streamControllers[data.streamId].startCall,
-                        data.success, data.reason);
+                        data.success, wrapReason(data.reason));
         break;
       case 'pull_complete':
         resolveOrReject(this.streamControllers[data.streamId].pullCall,
-                        data.success, data.reason);
+                        data.success, wrapReason(data.reason));
         break;
       case 'pull':
         // Ignore any pull after close is called.
@@ -1534,11 +1570,15 @@ MessageHandler.prototype = {
         });
         break;
       case 'enqueue':
+        assert(this.streamControllers[data.streamId],
+               'enqueue should have stream controller');
         if (!this.streamControllers[data.streamId].isClosed) {
           this.streamControllers[data.streamId].controller.enqueue(data.chunk);
         }
         break;
       case 'close':
+        assert(this.streamControllers[data.streamId],
+               'close should have stream controller');
         if (this.streamControllers[data.streamId].isClosed) {
           break;
         }
@@ -1547,12 +1587,15 @@ MessageHandler.prototype = {
         deleteStreamController();
         break;
       case 'error':
-        this.streamControllers[data.streamId].controller.error(data.reason);
+        assert(this.streamControllers[data.streamId],
+               'error should have stream controller');
+        this.streamControllers[data.streamId].controller.
+          error(wrapReason(data.reason));
         deleteStreamController();
         break;
       case 'cancel_complete':
         resolveOrReject(this.streamControllers[data.streamId].cancelCall,
-                        data.success, data.reason);
+                        data.success, wrapReason(data.reason));
         deleteStreamController();
         break;
       case 'cancel':
@@ -1560,12 +1603,15 @@ MessageHandler.prototype = {
           break;
         }
         resolveCall(this.streamSinks[data.streamId].onCancel,
-                    [data.reason]).then(() => {
+                    [wrapReason(data.reason)]).then(() => {
           sendStreamResponse({ stream: 'cancel_complete', success: true, });
         }, (reason) => {
           sendStreamResponse({ stream: 'cancel_complete',
                                success: false, reason, });
         });
+        this.streamSinks[data.streamId].sinkCapability.
+          reject(wrapReason(data.reason));
+        this.streamSinks[data.streamId].isCancelled = true;
         delete this.streamSinks[data.streamId];
         break;
       default:
@@ -1617,6 +1663,7 @@ export {
   FontType,
   ImageKind,
   CMapCompressionType,
+  AbortException,
   InvalidPDFException,
   MessageHandler,
   MissingDataException,
@@ -1633,6 +1680,7 @@ export {
   UnknownErrorException,
   Util,
   XRefParseException,
+  FormatError,
   arrayByteLength,
   arraysToBytes,
   assert,
@@ -1641,10 +1689,8 @@ export {
   createPromiseCapability,
   createObjectURL,
   deprecated,
-  error,
   getLookupTableFactory,
   getVerbosityLevel,
-  globalScope,
   info,
   isArray,
   isArrayBuffer,
@@ -1674,4 +1720,5 @@ export {
   stringToUTF8String,
   utf8StringToString,
   warn,
+  unreachable,
 };

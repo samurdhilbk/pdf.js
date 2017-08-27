@@ -14,7 +14,19 @@
  */
 /* eslint-disable no-multi-spaces */
 
-import { error, warn } from '../shared/util';
+import { warn } from '../shared/util';
+
+let JpegError = (function JpegErrorClosure() {
+  function JpegError(msg) {
+    this.message = 'JPEG error: ' + msg;
+  }
+
+  JpegError.prototype = new Error();
+  JpegError.prototype.name = 'JpegError';
+  JpegError.constructor = JpegError;
+
+  return JpegError;
+})();
 
 /**
  * This code was forked from https://github.com/notmasteryet/jpgjs.
@@ -115,8 +127,8 @@ var JpegImage = (function JpegImageClosure() {
       if (bitsData === 0xFF) {
         var nextByte = data[offset++];
         if (nextByte) {
-          error('JPEG error: unexpected marker ' +
-                ((bitsData << 8) | nextByte).toString(16));
+          throw new JpegError(
+            `unexpected marker ${((bitsData << 8) | nextByte).toString(16)}`);
         }
         // unstuff 0
       }
@@ -132,7 +144,7 @@ var JpegImage = (function JpegImageClosure() {
           return node;
         }
         if (typeof node !== 'object') {
-          error('JPEG error: invalid huffman sequence');
+          throw new JpegError('invalid huffman sequence');
         }
       }
     }
@@ -239,7 +251,7 @@ var JpegImage = (function JpegImageClosure() {
             }
           } else {
             if (s !== 1) {
-              error('JPEG error: invalid ACn encoding');
+              throw new JpegError('invalid ACn encoding');
             }
             successiveACNextValue = receiveAndExtend(s);
             successiveACState = r ? 2 : 3;
@@ -362,7 +374,7 @@ var JpegImage = (function JpegImageClosure() {
       }
       var marker = fileMarker && fileMarker.marker;
       if (!marker || marker <= 0xFF00) {
-        error('JPEG error: marker was not found');
+        throw new JpegError('marker was not found');
       }
 
       if (marker >= 0xFFD0 && marker <= 0xFFD7) { // RSTx
@@ -396,7 +408,7 @@ var JpegImage = (function JpegImageClosure() {
     var t;
 
     if (!qt) {
-      error('JPEG error: missing required Quantization Table.');
+      throw new JpegError('missing required Quantization Table.');
     }
 
     // inverse DCT on rows
@@ -588,10 +600,6 @@ var JpegImage = (function JpegImageClosure() {
     return component.blockData;
   }
 
-  function clamp0to255(a) {
-    return a <= 0 ? 0 : a >= 255 ? 255 : a;
-  }
-
   function findNextFileMarker(data, currentPos, startPos) {
     function peekUint16(pos) {
       return (data[pos] << 8) | data[pos + 1];
@@ -680,7 +688,7 @@ var JpegImage = (function JpegImageClosure() {
       var huffmanTablesAC = [], huffmanTablesDC = [];
       var fileMarker = readUint16();
       if (fileMarker !== 0xFFD8) { // SOI (Start of Image)
-        error('JPEG error: SOI not found');
+        throw new JpegError('SOI not found');
       }
 
       fileMarker = readUint16();
@@ -755,7 +763,7 @@ var JpegImage = (function JpegImageClosure() {
                   tableData[z] = readUint16();
                 }
               } else {
-                error('JPEG error: DQT - invalid table spec');
+                throw new JpegError('DQT - invalid table spec');
               }
               quantizationTables[quantizationTableSpec & 15] = tableData;
             }
@@ -765,7 +773,7 @@ var JpegImage = (function JpegImageClosure() {
           case 0xFFC1: // SOF1 (Start of Frame, Extended DCT)
           case 0xFFC2: // SOF2 (Start of Frame, Progressive DCT)
             if (frame) {
-              error('JPEG error: Only single frame JPEGs supported');
+              throw new JpegError('Only single frame JPEGs supported');
             }
             readUint16(); // skip data length
             frame = {};
@@ -865,7 +873,7 @@ var JpegImage = (function JpegImageClosure() {
               offset -= 3;
               break;
             }
-            error('JPEG error: unknown marker ' + fileMarker.toString(16));
+            throw new JpegError('unknown marker ' + fileMarker.toString(16));
         }
         fileMarker = readUint16();
       }
@@ -907,7 +915,7 @@ var JpegImage = (function JpegImageClosure() {
       var output;
       var numComponents = this.components.length;
       var dataLength = width * height * numComponents;
-      var data = new Uint8Array(dataLength);
+      var data = new Uint8ClampedArray(dataLength);
       var xScaleBlockOffset = new Uint32Array(width);
       var mask3LSB = 0xfffffff8; // used to clear the 3 LSBs
 
@@ -946,12 +954,13 @@ var JpegImage = (function JpegImageClosure() {
       return data;
     },
 
-    _isColorConversionNeeded: function isColorConversionNeeded() {
-      if (this.adobe && this.adobe.transformCode) {
-        // The adobe transform marker overrides any previous setting
-        return true;
-      } else if (this.numComponents === 3) {
-        if (!this.adobe && this.colorTransform === 0) {
+    _isColorConversionNeeded() {
+      if (this.adobe) {
+        // The adobe transform marker overrides any previous setting.
+        return !!this.adobe.transformCode;
+      }
+      if (this.numComponents === 3) {
+        if (this.colorTransform === 0) {
           // If the Adobe transform marker is not present and the image
           // dictionary has a 'ColorTransform' entry, explicitly set to `0`,
           // then the colours should *not* be transformed.
@@ -960,7 +969,7 @@ var JpegImage = (function JpegImageClosure() {
         return true;
       }
       // `this.numComponents !== 3`
-      if (!this.adobe && this.colorTransform === 1) {
+      if (this.colorTransform === 1) {
         // If the Adobe transform marker is not present and the image
         // dictionary has a 'ColorTransform' entry, explicitly set to `1`,
         // then the colours should be transformed.
@@ -972,12 +981,12 @@ var JpegImage = (function JpegImageClosure() {
     _convertYccToRgb: function convertYccToRgb(data) {
       var Y, Cb, Cr;
       for (var i = 0, length = data.length; i < length; i += 3) {
-        Y  = data[i    ];
+        Y = data[i];
         Cb = data[i + 1];
         Cr = data[i + 2];
-        data[i    ] = clamp0to255(Y - 179.456 + 1.402 * Cr);
-        data[i + 1] = clamp0to255(Y + 135.459 - 0.344 * Cb - 0.714 * Cr);
-        data[i + 2] = clamp0to255(Y - 226.816 + 1.772 * Cb);
+        data[i] = Y - 179.456 + 1.402 * Cr;
+        data[i + 1] = Y + 135.459 - 0.344 * Cb - 0.714 * Cr;
+        data[i + 2] = Y - 226.816 + 1.772 * Cb;
       }
       return data;
     },
@@ -986,12 +995,12 @@ var JpegImage = (function JpegImageClosure() {
       var Y, Cb, Cr, k;
       var offset = 0;
       for (var i = 0, length = data.length; i < length; i += 4) {
-        Y  = data[i];
+        Y = data[i];
         Cb = data[i + 1];
         Cr = data[i + 2];
         k = data[i + 3];
 
-        var r = -122.67195406894 +
+        data[offset++] = -122.67195406894 +
           Cb * (-6.60635669420364e-5 * Cb + 0.000437130475926232 * Cr -
                 5.4080610064599e-5 * Y + 0.00048449797120281 * k -
                 0.154362151871126) +
@@ -1001,7 +1010,7 @@ var JpegImage = (function JpegImageClosure() {
                0.48357088451265) +
           k * (-0.000336197177618394 * k + 0.484791561490776);
 
-        var g = 107.268039397724 +
+        data[offset++] = 107.268039397724 +
           Cb * (2.19927104525741e-5 * Cb - 0.000640992018297945 * Cr +
                 0.000659397001245577 * Y + 0.000426105652938837 * k -
                 0.176491792462875) +
@@ -1011,7 +1020,7 @@ var JpegImage = (function JpegImageClosure() {
                0.25802910206845) +
           k * (-0.000318913117588328 * k - 0.213742400323665);
 
-        var b = -20.810012546947 +
+        data[offset++] = -20.810012546947 +
           Cb * (-0.000570115196973677 * Cb - 2.63409051004589e-5 * Cr +
                 0.0020741088115012 * Y - 0.00288260236853442 * k +
                 0.814272968359295) +
@@ -1020,10 +1029,6 @@ var JpegImage = (function JpegImageClosure() {
           Y * (0.00174418132927582 * Y - 0.00255243321439347 * k +
                0.116935020465145) +
           k * (-0.000343531996510555 * k + 0.24165260232407);
-
-        data[offset++] = clamp0to255(r);
-        data[offset++] = clamp0to255(g);
-        data[offset++] = clamp0to255(b);
       }
       return data;
     },
@@ -1031,12 +1036,12 @@ var JpegImage = (function JpegImageClosure() {
     _convertYcckToCmyk: function convertYcckToCmyk(data) {
       var Y, Cb, Cr;
       for (var i = 0, length = data.length; i < length; i += 4) {
-        Y  = data[i];
+        Y = data[i];
         Cb = data[i + 1];
         Cr = data[i + 2];
-        data[i    ] = clamp0to255(434.456 - Y - 1.402 * Cr);
-        data[i + 1] = clamp0to255(119.541 - Y + 0.344 * Cb + 0.714 * Cr);
-        data[i + 2] = clamp0to255(481.816 - Y - 1.772 * Cb);
+        data[i] = 434.456 - Y - 1.402 * Cr;
+        data[i + 1] = 119.541 - Y + 0.344 * Cb + 0.714 * Cr;
+        data[i + 2] = 481.816 - Y - 1.772 * Cb;
         // K in data[i + 3] is unchanged
       }
       return data;
@@ -1045,59 +1050,56 @@ var JpegImage = (function JpegImageClosure() {
     _convertCmykToRgb: function convertCmykToRgb(data) {
       var c, m, y, k;
       var offset = 0;
-      var min = -255 * 255 * 255;
-      var scale = 1 / 255 / 255;
+      var scale = 1 / 255;
       for (var i = 0, length = data.length; i < length; i += 4) {
-        c = data[i];
-        m = data[i + 1];
-        y = data[i + 2];
-        k = data[i + 3];
+        c = data[i] * scale;
+        m = data[i + 1] * scale;
+        y = data[i + 2] * scale;
+        k = data[i + 3] * scale;
 
-        var r =
+        data[offset++] = 255 +
           c * (-4.387332384609988 * c + 54.48615194189176 * m +
                18.82290502165302 * y + 212.25662451639585 * k -
-               72734.4411664936) +
+               285.2331026137004) +
           m * (1.7149763477362134 * m - 5.6096736904047315 * y -
-               17.873870861415444 * k - 1401.7366389350734) +
+               17.873870861415444 * k - 5.497006427196366) +
           y * (-2.5217340131683033 * y - 21.248923337353073 * k +
-               4465.541406466231) -
-          k * (21.86122147463605 * k + 48317.86113160301);
-        var g =
+               17.5119270841813) -
+          k * (21.86122147463605 * k + 189.48180835922747);
+
+        data[offset++] = 255 +
           c * (8.841041422036149 * c + 60.118027045597366 * m +
                6.871425592049007 * y + 31.159100130055922 * k -
-               20220.756542821975) +
+               79.2970844816548) +
           m * (-15.310361306967817 * m + 17.575251261109482 * y +
-               131.35250912493976 * k - 48691.05921601825) +
+               131.35250912493976 * k - 190.9453302588951) +
           y * (4.444339102852739 * y + 9.8632861493405 * k -
-               6341.191035517494) -
-          k * (20.737325471181034 * k + 47890.15695978492);
-        var b =
+               24.86741582555878) -
+          k * (20.737325471181034 * k + 187.80453709719578);
+
+        data[offset++] = 255 +
           c * (0.8842522430003296 * c + 8.078677503112928 * m +
                30.89978309703729 * y - 0.23883238689178934 * k -
-               3616.812083916688) +
+               14.183576799673286) +
           m * (10.49593273432072 * m + 63.02378494754052 * y +
-               50.606957656360734 * k - 28620.90484698408) +
+               50.606957656360734 * k - 112.23884253719248) +
           y * (0.03296041114873217 * y + 115.60384449646641 * k -
-               49363.43385999684) -
-          k * (22.33816807309886 * k + 45932.16563550634);
-
-        data[offset++] = r >= 0 ? 255 : r <= min ? 0 : 255 + r * scale | 0;
-        data[offset++] = g >= 0 ? 255 : g <= min ? 0 : 255 + g * scale | 0;
-        data[offset++] = b >= 0 ? 255 : b <= min ? 0 : 255 + b * scale | 0;
+               193.58209356861505) -
+          k * (22.33816807309886 * k + 180.12613974708367);
       }
       return data;
     },
 
     getData: function getData(width, height, forceRGBoutput) {
       if (this.numComponents > 4) {
-        error('JPEG error: Unsupported color mode');
+        throw new JpegError('Unsupported color mode');
       }
       // type of data: Uint8Array(width * height * numComponents)
       var data = this._getLinearizedBlockData(width, height);
 
       if (this.numComponents === 1 && forceRGBoutput) {
         var dataLength = data.length;
-        var rgbData = new Uint8Array(dataLength * 3);
+        var rgbData = new Uint8ClampedArray(dataLength * 3);
         var offset = 0;
         for (var i = 0; i < dataLength; i++) {
           var grayColor = data[i];

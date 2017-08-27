@@ -15,7 +15,8 @@
 /* eslint-disable no-multi-spaces */
 
 import {
-  assert, error, info, MissingDataException, UNSUPPORTED_FEATURES, Util, warn
+  assert, FormatError, info, MissingDataException, unreachable,
+  UNSUPPORTED_FEATURES, Util, warn
 } from '../shared/util';
 import { ColorSpace } from './colorspace';
 import { isStream } from './primitives';
@@ -34,14 +35,14 @@ var ShadingType = {
 var Pattern = (function PatternClosure() {
   // Constructor should define this.getPattern
   function Pattern() {
-    error('should not call Pattern constructor');
+    throw new Error('should not call Pattern constructor');
   }
 
   Pattern.prototype = {
     // Input: current Canvas context
     // Output: the appropriate fillStyle or strokeStyle
     getPattern: function Pattern_getPattern(ctx) {
-      error('Should not call Pattern.getStyle: ' + ctx);
+      throw new Error(`Should not call Pattern.getStyle: ${ctx}`);
     },
   };
 
@@ -63,7 +64,7 @@ var Pattern = (function PatternClosure() {
         case ShadingType.TENSOR_PATCH_MESH:
           return new Shadings.Mesh(shading, matrix, xref, res);
         default:
-          throw new Error('Unsupported ShadingType: ' + type);
+          throw new FormatError('Unsupported ShadingType: ' + type);
       }
     } catch (ex) {
       if (ex instanceof MissingDataException) {
@@ -198,7 +199,7 @@ Shadings.RadialAxial = (function RadialAxialClosure() {
         r1 = coordsArr[5];
         type = 'radial';
       } else {
-        error('getPattern type unknown: ' + shadingType);
+        unreachable(`getPattern type unknown: ${shadingType}`);
       }
 
       var matrix = this.matrix;
@@ -327,7 +328,9 @@ Shadings.Mesh = (function MeshClosure() {
       var coord = reader.readCoordinate();
       var color = reader.readComponents();
       if (verticesLeft === 0) { // ignoring flags if we started a triangle
-        assert((0 <= f && f <= 2), 'Unknown type4 flag');
+        if (!(0 <= f && f <= 2)) {
+          throw new FormatError('Unknown type4 flag');
+        }
         switch (f) {
           case 0:
             verticesLeft = 3;
@@ -491,7 +494,9 @@ Shadings.Mesh = (function MeshClosure() {
     var cs = new Int32Array(4); // c00, c30, c03, c33
     while (reader.hasData) {
       var f = reader.readFlag();
-      assert((0 <= f && f <= 3), 'Unknown type6 flag');
+      if (!(0 <= f && f <= 3)) {
+        throw new FormatError('Unknown type6 flag');
+      }
       var i, ii;
       var pi = coords.length;
       for (i = 0, ii = (f !== 0 ? 8 : 12); i < ii; i++) {
@@ -601,7 +606,9 @@ Shadings.Mesh = (function MeshClosure() {
     var cs = new Int32Array(4); // c00, c30, c03, c33
     while (reader.hasData) {
       var f = reader.readFlag();
-      assert((0 <= f && f <= 3), 'Unknown type7 flag');
+      if (!(0 <= f && f <= 3)) {
+        throw new FormatError('Unknown type7 flag');
+      }
       var i, ii;
       var pi = coords.length;
       for (i = 0, ii = (f !== 0 ? 12 : 16); i < ii; i++) {
@@ -705,7 +712,9 @@ Shadings.Mesh = (function MeshClosure() {
   }
 
   function Mesh(stream, matrix, xref, res) {
-    assert(isStream(stream), 'Mesh data is not a stream');
+    if (!isStream(stream)) {
+      throw new FormatError('Mesh data is not a stream');
+    }
     var dict = stream.dict;
     this.matrix = matrix;
     this.shadingType = dict.get('ShadingType');
@@ -742,7 +751,9 @@ Shadings.Mesh = (function MeshClosure() {
         break;
       case ShadingType.LATTICE_FORM_MESH:
         var verticesPerRow = dict.get('VerticesPerRow') | 0;
-        assert(verticesPerRow >= 2, 'Invalid VerticesPerRow');
+        if (verticesPerRow < 2) {
+          throw new FormatError('Invalid VerticesPerRow');
+        }
         decodeType5Shading(this, reader, verticesPerRow);
         break;
       case ShadingType.COONS_PATCH_MESH:
@@ -754,7 +765,7 @@ Shadings.Mesh = (function MeshClosure() {
         patchMesh = true;
         break;
       default:
-        error('Unsupported mesh type.');
+        unreachable('Unsupported mesh type.');
         break;
     }
 
@@ -805,7 +816,7 @@ function getTilingPatternIR(operatorList, dict, args) {
   // Ensure that the pattern has a non-zero width and height, to prevent errors
   // in `pattern_helper.js` (fixes issue8330.pdf).
   if ((bbox[2] - bbox[0]) === 0 || (bbox[3] - bbox[1]) === 0) {
-    throw new Error(`getTilingPatternIR - invalid /BBox array: [${bbox}].`);
+    throw new FormatError(`Invalid getTilingPatternIR /BBox array: [${bbox}].`);
   }
 
   return [

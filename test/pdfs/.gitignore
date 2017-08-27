@@ -43,6 +43,7 @@
 !issue7580.pdf
 !issue7598.pdf
 !issue7665.pdf
+!issue7696.pdf
 !issue7835.pdf
 !issue7855.pdf
 !issue7872.pdf
@@ -53,6 +54,11 @@
 !issue8372.pdf
 !issue8424.pdf
 !issue8480.pdf
+!issue8570.pdf
+!issue8697.pdf
+!issue8707.pdf
+!issue8798r.pdf
+!issue8823.pdf
 !bad-PageLabels.pdf
 !filled-background.pdf
 !ArabicCIDTrueType.pdf
@@ -287,3 +293,4 @@
 !font_ascent_descent.pdf
 !issue8097_reduced.pdf
 !transparent.pdf
+!xobject-image.pdf

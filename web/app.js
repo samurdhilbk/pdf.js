@@ -16,8 +16,8 @@
 
 import {
   animationStarted, DEFAULT_SCALE_VALUE, getPDFFileNameFromURL, MAX_SCALE,
-  MIN_SCALE, noContextMenuHandler, normalizeWheelEventDelta,
-  parseQueryString, ProgressBar, RendererType, UNKNOWN_SCALE
+  MIN_SCALE, noContextMenuHandler, normalizeWheelEventDelta, parseQueryString,
+  ProgressBar, RendererType
 } from './ui_utils';
 import {
   build, createBlob, getDocument, getFilenameFromUrl, InvalidPDFException,
@@ -141,6 +141,7 @@ let PDFViewerApplication = {
     pdfBugEnabled: false,
     showPreviousViewOnLoad: true,
     defaultZoomValue: '',
+    disablePageMode: false,
     disablePageLabels: false,
     renderer: 'canvas',
     enhanceTextSelection: false,
@@ -254,6 +255,9 @@ let PDFViewerApplication = {
       }),
       preferences.get('renderInteractiveForms').then(function resolved(value) {
         viewerPrefs['renderInteractiveForms'] = value;
+      }),
+      preferences.get('disablePageMode').then(function resolved(value) {
+        viewerPrefs['disablePageMode'] = value;
       }),
       preferences.get('disablePageLabels').then(function resolved(value) {
         viewerPrefs['disablePageLabels'] = value;
@@ -645,7 +649,7 @@ let PDFViewerApplication = {
       });
     }
 
-    let parameters = Object.create(null), scale;
+    let parameters = Object.create(null);
     if (typeof file === 'string') { // URL
       this.setTitleUsingUrl(file);
       parameters.url = file;
@@ -662,14 +666,15 @@ let PDFViewerApplication = {
 
     if (args) {
       for (let prop in args) {
+        if ((typeof PDFJSDev === 'undefined' || !PDFJSDev.test('PDFJS_NEXT')) &&
+            !PDFJS.pdfjsNext && prop === 'scale') {
+          console.error('Call of open() with obsolete "scale" argument, ' +
+            'please use the "defaultZoomValue" preference instead.');
+          continue;
+        } else if (prop === 'length') {
+          this.pdfDocumentProperties.setFileSize(args[prop]);
+        }
         parameters[prop] = args[prop];
-      }
-
-      if (args.scale) {
-        scale = args.scale;
-      }
-      if (args.length) {
-        this.pdfDocumentProperties.setFileSize(args.length);
       }
     }
 
@@ -689,7 +694,7 @@ let PDFViewerApplication = {
     loadingTask.onUnsupportedFeature = this.fallback.bind(this);
 
     return loadingTask.promise.then((pdfDocument) => {
-      this.load(pdfDocument, scale);
+      this.load(pdfDocument);
     }, (exception) => {
       let message = exception && exception.message;
       let loadingErrorMessage;
@@ -842,6 +847,11 @@ let PDFViewerApplication = {
   },
 
   progress(level) {
+    if (this.downloadComplete) {
+      // Don't accidentally show the loading bar again when the entire file has
+      // already been fetched (only an issue when disableAutoFetch is enabled).
+      return;
+    }
     let percent = Math.round(level * 100);
     // When we transition from full request to range requests, it's possible
     // that we discard some of the loaded data. This can cause the loading
@@ -870,8 +880,7 @@ let PDFViewerApplication = {
     }
   },
 
-  load(pdfDocument, scale) {
-    scale = scale || UNKNOWN_SCALE;
+  load(pdfDocument) {
     this.pdfDocument = pdfDocument;
 
     pdfDocument.getDownloadInfo().then(() => {
@@ -882,6 +891,11 @@ let PDFViewerApplication = {
         this.eventBus.dispatch('documentload', { source: this, });
       });
     });
+
+    // Since the `setInitialView` call below depends on this being resolved,
+    // fetch it early to avoid delaying initial rendering of the PDF document.
+    let pageModePromise = pdfDocument.getPageMode().catch(
+      function() { /* Avoid breaking initial rendering; ignoring errors. */ });
 
     this.toolbar.setPagesCount(pdfDocument.numPages, false);
     this.secondaryToolbar.setPagesCount(pdfDocument.numPages);
@@ -932,37 +946,39 @@ let PDFViewerApplication = {
         bookmark: this.initialBookmark,
         hash: null,
       };
-      let storedHash = this.viewerPrefs['defaultZoomValue'] ?
-        ('zoom=' + this.viewerPrefs['defaultZoomValue']) : null;
-      let sidebarView = this.viewerPrefs['sidebarViewOnLoad'];
+      let storePromise = store.getMultiple({
+        exists: false,
+        page: '1',
+        zoom: DEFAULT_SCALE_VALUE,
+        scrollLeft: '0',
+        scrollTop: '0',
+        sidebarView: SidebarView.NONE,
+      }).catch(() => { /* Unable to read from storage; ignoring errors. */ });
 
-      new Promise((resolve, reject) => {
-        if (!this.viewerPrefs['showPreviousViewOnLoad']) {
-          resolve();
-          return;
-        }
-        store.getMultiple({
-          exists: false,
-          page: '1',
-          zoom: DEFAULT_SCALE_VALUE,
-          scrollLeft: '0',
-          scrollTop: '0',
-          sidebarView: SidebarView.NONE,
-        }).then((values) => {
-          if (!values.exists) {
-            resolve();
-            return;
-          }
-          storedHash = 'page=' + values.page +
+      Promise.all([storePromise, pageModePromise]).then(
+          ([values = {}, pageMode]) => {
+        // Initialize the default values, from user preferences.
+        let hash = this.viewerPrefs['defaultZoomValue'] ?
+          ('zoom=' + this.viewerPrefs['defaultZoomValue']) : null;
+        let sidebarView = this.viewerPrefs['sidebarViewOnLoad'];
+
+        if (values.exists && this.viewerPrefs['showPreviousViewOnLoad']) {
+          hash = 'page=' + values.page +
             '&zoom=' + (this.viewerPrefs['defaultZoomValue'] || values.zoom) +
             ',' + values.scrollLeft + ',' + values.scrollTop;
-          sidebarView = this.viewerPrefs['sidebarViewOnLoad'] ||
-                        (values.sidebarView | 0);
-          resolve();
-        }).catch(resolve);
-      }).then(() => {
-        this.setInitialView(storedHash, { sidebarView, scale, });
-        initialParams.hash = storedHash;
+          sidebarView = sidebarView || (values.sidebarView | 0);
+        }
+        if (pageMode && !this.viewerPrefs['disablePageMode']) {
+          // Always let the user preference/history take precedence.
+          sidebarView = sidebarView || apiPageModeToSidebarView(pageMode);
+        }
+        return {
+          hash,
+          sidebarView,
+        };
+      }).then(({ hash, sidebarView, }) => {
+        this.setInitialView(hash, { sidebarView, });
+        initialParams.hash = hash;
 
         // Make all navigation keys work on document load,
         // unless the viewer is embedded in a web page.
@@ -977,7 +993,7 @@ let PDFViewerApplication = {
             !initialParams.hash) {
           return;
         }
-        if (this.hasEqualPageSizes) {
+        if (pdfViewer.hasEqualPageSizes) {
           return;
         }
         this.initialDestination = initialParams.destination;
@@ -985,6 +1001,12 @@ let PDFViewerApplication = {
 
         pdfViewer.currentScaleValue = pdfViewer.currentScaleValue;
         this.setInitialView(initialParams.hash);
+      }).then(function() {
+        // At this point, rendering of the initial page(s) should always have
+        // started (and may even have completed).
+        // To prevent any future issues, e.g. the document being completely
+        // blank on load, always trigger rendering here.
+        pdfViewer.update();
       });
     });
 
@@ -1113,9 +1135,7 @@ let PDFViewerApplication = {
     });
   },
 
-  setInitialView(storedHash, options = {}) {
-    let { scale = 0, sidebarView = SidebarView.NONE, } = options;
-
+  setInitialView(storedHash, { sidebarView, } = {}) {
     this.isInitialViewSet = true;
     this.pdfSidebar.setInitialView(sidebarView);
 
@@ -1128,9 +1148,6 @@ let PDFViewerApplication = {
       this.initialBookmark = null;
     } else if (storedHash) {
       this.pdfLinkService.setHash(storedHash);
-    } else if (scale) {
-      this.pdfViewer.currentScaleValue = scale;
-      this.page = 1;
     }
 
     // Ensure that the correct page number is displayed in the UI,
@@ -1209,19 +1226,6 @@ let PDFViewerApplication = {
         type: 'print',
       });
     }
-  },
-
-  // Whether all pages of the PDF have the same width and height.
-  get hasEqualPageSizes() {
-    let firstPage = this.pdfViewer.getPageView(0);
-    for (let i = 1, ii = this.pagesCount; i < ii; ++i) {
-      let pageView = this.pdfViewer.getPageView(i);
-      if (pageView.width !== firstPage.width ||
-          pageView.height !== firstPage.height) {
-        return false;
-      }
-    }
-    return true;
   },
 
   afterPrint: function pdfViewSetupAfterPrint() {
@@ -1403,6 +1407,9 @@ if (typeof PDFJSDev === 'undefined' || PDFJSDev.test('GENERIC')) {
   const HOSTED_VIEWER_ORIGINS = ['null',
     'http://mozilla.github.io', 'https://mozilla.github.io'];
   validateFileURL = function validateFileURL(file) {
+    if (file === undefined) {
+      return;
+    }
     try {
       let viewerOrigin = new URL(window.location.href).origin || 'null';
       if (HOSTED_VIEWER_ORIGINS.indexOf(viewerOrigin) >= 0) {
@@ -1790,19 +1797,18 @@ function webViewerUpdateViewarea(evt) {
 }
 
 function webViewerResize() {
-  let currentScaleValue = PDFViewerApplication.pdfViewer.currentScaleValue;
+  let { pdfDocument, pdfViewer, } = PDFViewerApplication;
+  if (!pdfDocument) {
+    return;
+  }
+  let currentScaleValue = pdfViewer.currentScaleValue;
   if (currentScaleValue === 'auto' ||
       currentScaleValue === 'page-fit' ||
       currentScaleValue === 'page-width') {
     // Note: the scale is constant for 'page-actual'.
-    PDFViewerApplication.pdfViewer.currentScaleValue = currentScaleValue;
-  } else if (!currentScaleValue) {
-    // Normally this shouldn't happen, but if the scale wasn't initialized
-    // we set it to the default value in order to prevent any issues.
-    // (E.g. the document being rendered with the wrong scale on load.)
-    PDFViewerApplication.pdfViewer.currentScaleValue = DEFAULT_SCALE_VALUE;
+    pdfViewer.currentScaleValue = currentScaleValue;
   }
-  PDFViewerApplication.pdfViewer.update();
+  pdfViewer.update();
 }
 
 function webViewerHashchange(evt) {
@@ -2296,6 +2302,30 @@ function webViewerKeyDown(evt) {
   if (handled) {
     evt.preventDefault();
   }
+}
+
+/**
+ * Converts API PageMode values to the format used by `PDFSidebar`.
+ * NOTE: There's also a "FullScreen" parameter which is not possible to support,
+ *       since the Fullscreen API used in browsers requires that entering
+ *       fullscreen mode only occurs as a result of a user-initiated event.
+ * @param {string} mode - The API PageMode value.
+ * @returns {number} A value from {SidebarView}.
+ */
+function apiPageModeToSidebarView(mode) {
+  switch (mode) {
+    case 'UseNone':
+      return SidebarView.NONE;
+    case 'UseThumbs':
+      return SidebarView.THUMBS;
+    case 'UseOutlines':
+      return SidebarView.OUTLINE;
+    case 'UseAttachments':
+      return SidebarView.ATTACHMENTS;
+    case 'UseOC':
+      // Not implemented, since we don't support Optional Content Groups yet.
+  }
+  return SidebarView.NONE; // Default value.
 }
 
 /* Abstract factory for the print service. */

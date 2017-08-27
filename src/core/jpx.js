@@ -14,9 +14,21 @@
  */
 
 import {
-  error, info, log2, readUint16, readUint32, warn
+  info, log2, readUint16, readUint32, warn
 } from '../shared/util';
 import { ArithmeticDecoder } from './arithmetic_decoder';
+
+let JpxError = (function JpxErrorClosure() {
+  function JpxError(msg) {
+    this.message = 'JPX error: ' + msg;
+  }
+
+  JpxError.prototype = new Error();
+  JpxError.prototype.name = 'JpxError';
+  JpxError.constructor = JpxError;
+
+  return JpxError;
+})();
 
 var JpxImage = (function JpxImageClosure() {
   // Table E.1
@@ -57,7 +69,7 @@ var JpxImage = (function JpxImageClosure() {
           lbox = length - position + headerSize;
         }
         if (lbox < headerSize) {
-          error('JPX Error: Invalid box field size');
+          throw new JpxError('Invalid box field size');
         }
         var dataLength = lbox - headerSize;
         var jumpDataLength = true;
@@ -135,7 +147,7 @@ var JpxImage = (function JpxImageClosure() {
           return;
         }
       }
-      error('JPX Error: No size marker found in JPX stream');
+      throw new JpxError('No size marker found in JPX stream');
     },
     parseCodestream: function JpxImage_parseCodestream(data, start, end) {
       var context = {};
@@ -390,7 +402,7 @@ var JpxImage = (function JpxImageClosure() {
         }
       } catch (e) {
         if (doNotRecover || this.failOnCorruptedImage) {
-          error('JPX Error: ' + e.message);
+          throw new JpxError(e.message);
         } else {
           warn('JPX: Trying to recover from: ' + e.message);
         }
@@ -642,7 +654,7 @@ var JpxImage = (function JpxImageClosure() {
         }
         r = 0;
       }
-      error('JPX Error: Out of packets');
+      throw new JpxError('Out of packets');
     };
   }
   function ResolutionLayerComponentPositionIterator(context) {
@@ -682,7 +694,7 @@ var JpxImage = (function JpxImageClosure() {
         }
         l = 0;
       }
-      error('JPX Error: Out of packets');
+      throw new JpxError('Out of packets');
     };
   }
   function ResolutionPositionComponentLayerIterator(context) {
@@ -741,7 +753,7 @@ var JpxImage = (function JpxImageClosure() {
         }
         p = 0;
       }
-      error('JPX Error: Out of packets');
+      throw new JpxError('Out of packets');
     };
   }
   function PositionComponentResolutionLayerIterator(context) {
@@ -788,7 +800,7 @@ var JpxImage = (function JpxImageClosure() {
         }
         px = 0;
       }
-      error('JPX Error: Out of packets');
+      throw new JpxError('Out of packets');
     };
   }
   function ComponentPositionResolutionLayerIterator(context) {
@@ -834,7 +846,7 @@ var JpxImage = (function JpxImageClosure() {
         }
         py = 0;
       }
-      error('JPX Error: Out of packets');
+      throw new JpxError('Out of packets');
     };
   }
   function getPrecinctIndexIfExist(
@@ -1014,7 +1026,7 @@ var JpxImage = (function JpxImageClosure() {
           new ComponentPositionResolutionLayerIterator(context);
         break;
       default:
-        error('JPX Error: Unsupported progression order ' + progressionOrder);
+        throw new JpxError(`Unsupported progression order ${progressionOrder}`);
     }
   }
   function parseTilePackets(context, data, offset, dataLength) {
@@ -1374,7 +1386,7 @@ var JpxImage = (function JpxImageClosure() {
         transformedTiles[c] = transformTile(context, tile, c);
       }
       var tile0 = transformedTiles[0];
-      var out = new Uint8Array(tile0.items.length * componentsCount);
+      var out = new Uint8ClampedArray(tile0.items.length * componentsCount);
       var result = {
         left: tile0.left,
         top: tile0.top,
@@ -1384,8 +1396,8 @@ var JpxImage = (function JpxImageClosure() {
       };
 
       // Section G.2.2 Inverse multi component transform
-      var shift, offset, max, min, maxK;
-      var pos = 0, j, jj, y0, y1, y2, r, g, b, k, val;
+      var shift, offset;
+      var pos = 0, j, jj, y0, y1, y2;
       if (tile.codingStyleDefaultParameters.multipleComponentTransform) {
         var fourComponents = componentsCount === 4;
         var y0items = transformedTiles[0].items;
@@ -1398,9 +1410,6 @@ var JpxImage = (function JpxImageClosure() {
         // compute shift and offset only once.
         shift = components[0].precision - 8;
         offset = (128 << shift) + 0.5;
-        max = 255 * (1 << shift);
-        maxK = max * 0.5;
-        min = -maxK;
 
         var component0 = tile.components[0];
         var alpha01 = componentsCount - 3;
@@ -1411,12 +1420,9 @@ var JpxImage = (function JpxImageClosure() {
             y0 = y0items[j] + offset;
             y1 = y1items[j];
             y2 = y2items[j];
-            r = y0 + 1.402 * y2;
-            g = y0 - 0.34413 * y1 - 0.71414 * y2;
-            b = y0 + 1.772 * y1;
-            out[pos++] = r <= 0 ? 0 : r >= max ? 255 : r >> shift;
-            out[pos++] = g <= 0 ? 0 : g >= max ? 255 : g >> shift;
-            out[pos++] = b <= 0 ? 0 : b >= max ? 255 : b >> shift;
+            out[pos++] = (y0 + 1.402 * y2) >> shift;
+            out[pos++] = (y0 - 0.34413 * y1 - 0.71414 * y2) >> shift;
+            out[pos++] = (y0 + 1.772 * y1) >> shift;
           }
         } else {
           // inverse reversible multiple component transform
@@ -1424,18 +1430,16 @@ var JpxImage = (function JpxImageClosure() {
             y0 = y0items[j] + offset;
             y1 = y1items[j];
             y2 = y2items[j];
-            g = y0 - ((y2 + y1) >> 2);
-            r = g + y2;
-            b = g + y1;
-            out[pos++] = r <= 0 ? 0 : r >= max ? 255 : r >> shift;
-            out[pos++] = g <= 0 ? 0 : g >= max ? 255 : g >> shift;
-            out[pos++] = b <= 0 ? 0 : b >= max ? 255 : b >> shift;
+            let g = y0 - ((y2 + y1) >> 2);
+
+            out[pos++] = (g + y2) >> shift;
+            out[pos++] = g >> shift;
+            out[pos++] = (g + y1) >> shift;
           }
         }
         if (fourComponents) {
           for (j = 0, pos = 3; j < jj; j++, pos += 4) {
-            k = y3items[j];
-            out[pos] = k <= min ? 0 : k >= maxK ? 255 : (k + offset) >> shift;
+            out[pos] = (y3items[j] + offset) >> shift;
           }
         }
       } else { // no multi-component transform
@@ -1443,12 +1447,8 @@ var JpxImage = (function JpxImageClosure() {
           var items = transformedTiles[c].items;
           shift = components[c].precision - 8;
           offset = (128 << shift) + 0.5;
-          max = (127.5 * (1 << shift));
-          min = -max;
           for (pos = c, j = 0, jj = items.length; j < jj; j++) {
-            val = items[j];
-            out[pos] = val <= min ? 0 :
-                       val >= max ? 255 : (val + offset) >> shift;
+            out[pos] = (items[j] + offset) >> shift;
             pos += componentsCount;
           }
         }
@@ -1951,7 +1951,7 @@ var JpxImage = (function JpxImageClosure() {
                      (decoder.readBit(contexts, UNIFORM_CONTEXT) << 1) |
                       decoder.readBit(contexts, UNIFORM_CONTEXT);
         if (symbol !== 0xA) {
-          error('JPX Error: Invalid segmentation symbol');
+          throw new JpxError('Invalid segmentation symbol');
         }
       },
     };

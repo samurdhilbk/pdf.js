@@ -14,7 +14,7 @@
  */
 
 import {
-  assert, bytesToString, createPromiseCapability, createValidAbsoluteUrl, error,
+  bytesToString, createPromiseCapability, createValidAbsoluteUrl, FormatError,
   info, InvalidPDFException, isArray, isBool, isInt, isString,
   MissingDataException, shadow, stringToPDFString, stringToUTF8String, Util,
   warn, XRefParseException
@@ -33,7 +33,9 @@ var Catalog = (function CatalogClosure() {
     this.pdfManager = pdfManager;
     this.xref = xref;
     this.catDict = xref.getCatalogObj();
-    assert(isDict(this.catDict), 'catalog object is not a dictionary');
+    if (!isDict(this.catDict)) {
+      throw new FormatError('catalog object is not a dictionary');
+    }
 
     this.fontCache = new RefSetCache();
     this.builtInCMapCache = Object.create(null);
@@ -80,7 +82,9 @@ var Catalog = (function CatalogClosure() {
     },
     get toplevelPagesDict() {
       var pagesObj = this.catDict.get('Pages');
-      assert(isDict(pagesObj), 'invalid top-level pages dictionary');
+      if (!isDict(pagesObj)) {
+        throw new FormatError('invalid top-level pages dictionary');
+      }
       // shadow the prototype getter
       return shadow(this, 'toplevelPagesDict', pagesObj);
     },
@@ -118,7 +122,9 @@ var Catalog = (function CatalogClosure() {
         if (outlineDict === null) {
           continue;
         }
-        assert(outlineDict.has('Title'), 'Invalid outline item');
+        if (!outlineDict.has('Title')) {
+          throw new FormatError('Invalid outline item');
+        }
 
         var data = { url: null, dest: null, };
         Catalog.parseDestDictionary({
@@ -163,12 +169,12 @@ var Catalog = (function CatalogClosure() {
     },
     get numPages() {
       var obj = this.toplevelPagesDict.get('Count');
-      assert(
-        isInt(obj),
-        'page count in top level pages object is not an integer'
-      );
+      if (!isInt(obj)) {
+        throw new FormatError(
+          'page count in top level pages object is not an integer');
+      }
       // shadow the prototype getter
-      return shadow(this, 'num', obj);
+      return shadow(this, 'numPages', obj);
     },
     get destinations() {
       function fetchDestination(dest) {
@@ -258,23 +264,31 @@ var Catalog = (function CatalogClosure() {
       for (var i = 0, ii = this.numPages; i < ii; i++) {
         if (i in nums) {
           var labelDict = nums[i];
-          assert(isDict(labelDict), 'The PageLabel is not a dictionary.');
+          if (!isDict(labelDict)) {
+            throw new FormatError('The PageLabel is not a dictionary.');
+          }
 
           var type = labelDict.get('Type');
-          assert(!type || isName(type, 'PageLabel'),
-                 'Invalid type in PageLabel dictionary.');
+          if (type && !isName(type, 'PageLabel')) {
+            throw new FormatError('Invalid type in PageLabel dictionary.');
+          }
 
           var s = labelDict.get('S');
-          assert(!s || isName(s), 'Invalid style in PageLabel dictionary.');
+          if (s && !isName(s)) {
+            throw new FormatError('Invalid style in PageLabel dictionary.');
+          }
           style = s ? s.name : null;
 
           var p = labelDict.get('P');
-          assert(!p || isString(p), 'Invalid prefix in PageLabel dictionary.');
+          if (p && !isString(p)) {
+            throw new FormatError('Invalid prefix in PageLabel dictionary.');
+          }
           prefix = p ? stringToPDFString(p) : '';
 
           var st = labelDict.get('St');
-          assert(!st || (isInt(st) && st >= 1),
-                 'Invalid start in PageLabel dictionary.');
+          if (st && !(isInt(st) && st >= 1)) {
+            throw new FormatError('Invalid start in PageLabel dictionary.');
+          }
           currentIndex = st || 1;
         }
 
@@ -302,8 +316,10 @@ var Catalog = (function CatalogClosure() {
             currentLabel = charBuf.join('');
             break;
           default:
-            assert(!style,
-                   'Invalid style "' + style + '" in PageLabel dictionary.');
+            if (style) {
+              throw new FormatError(
+                `Invalid style "${style}" in PageLabel dictionary.`);
+            }
         }
         pageLabels[i] = prefix + currentLabel;
 
@@ -311,6 +327,24 @@ var Catalog = (function CatalogClosure() {
         currentIndex++;
       }
       return pageLabels;
+    },
+
+    get pageMode() {
+      let obj = this.catDict.get('PageMode');
+      let pageMode = 'UseNone'; // Default value.
+
+      if (isName(obj)) {
+        switch (obj.name) {
+          case 'UseNone':
+          case 'UseOutlines':
+          case 'UseThumbs':
+          case 'FullScreen':
+          case 'UseOC':
+          case 'UseAttachments':
+            pageMode = obj.name;
+        }
+      }
+      return shadow(this, 'pageMode', pageMode);
     },
 
     get attachments() {
@@ -454,8 +488,11 @@ var Catalog = (function CatalogClosure() {
           }
 
           // Must be a child page dictionary.
-          assert(isDict(currentNode),
-            'page dictionary kid reference points to wrong type of object');
+          if (!isDict(currentNode)) {
+            capability.reject(new FormatError(
+              'page dictionary kid reference points to wrong type of object'));
+            return;
+          }
 
           count = currentNode.get('Count');
           // Cache the Kids count, since it can reduce redundant lookups in long
@@ -471,7 +508,11 @@ var Catalog = (function CatalogClosure() {
           }
 
           var kids = currentNode.get('Kids');
-          assert(isArray(kids), 'page dictionary kids object is not an array');
+          if (!isArray(kids)) {
+            capability.reject(new FormatError(
+              'page dictionary kids object is not an array'));
+            return;
+          }
 
           // Always check all `Kids` nodes, to avoid getting stuck in an empty
           // node further down in the tree (see issue5644.pdf, issue8088.pdf),
@@ -480,7 +521,7 @@ var Catalog = (function CatalogClosure() {
             nodesToVisit.push(kids[last]);
           }
         }
-        capability.reject('Page index ' + pageIndex + ' not found.');
+        capability.reject(new Error('Page index ' + pageIndex + ' not found.'));
       }
       next();
       return capability.promise;
@@ -497,19 +538,24 @@ var Catalog = (function CatalogClosure() {
         return xref.fetchAsync(kidRef).then(function (node) {
           if (isRefsEqual(kidRef, pageRef) && !isDict(node, 'Page') &&
               !(isDict(node) && !node.has('Type') && node.has('Contents'))) {
-            throw new Error('The reference does not point to a /Page Dict.');
+            throw new FormatError(
+              'The reference does not point to a /Page Dict.');
           }
           if (!node) {
             return null;
           }
-          assert(isDict(node), 'node must be a Dict.');
+          if (!isDict(node)) {
+            throw new FormatError('node must be a Dict.');
+          }
           parentRef = node.getRaw('Parent');
           return node.getAsync('Parent');
         }).then(function (parent) {
           if (!parent) {
             return null;
           }
-          assert(isDict(parent), 'parent must be a Dict.');
+          if (!isDict(parent)) {
+            throw new FormatError('parent must be a Dict.');
+          }
           return parent.getAsync('Kids');
         }).then(function (kids) {
           if (!kids) {
@@ -519,7 +565,9 @@ var Catalog = (function CatalogClosure() {
           var found = false;
           for (var i = 0; i < kids.length; i++) {
             var kid = kids[i];
-            assert(isRef(kid), 'kid must be a Ref.');
+            if (!isRef(kid)) {
+              throw new FormatError('kid must be a Ref.');
+            }
             if (kid.num === kidRef.num) {
               found = true;
               break;
@@ -534,7 +582,7 @@ var Catalog = (function CatalogClosure() {
             }));
           }
           if (!found) {
-            error('kid ref not found in parents kids');
+            throw new FormatError('kid ref not found in parents kids');
           }
           return Promise.all(kidPromises).then(function () {
             return [total, parentRef];
@@ -592,20 +640,32 @@ var Catalog = (function CatalogClosure() {
 
     var destDict = params.destDict;
     if (!isDict(destDict)) {
-      warn('Catalog_parseDestDictionary: "destDict" must be a dictionary.');
+      warn('parseDestDictionary: "destDict" must be a dictionary.');
       return;
     }
     var resultObj = params.resultObj;
     if (typeof resultObj !== 'object') {
-      warn('Catalog_parseDestDictionary: "resultObj" must be an object.');
+      warn('parseDestDictionary: "resultObj" must be an object.');
       return;
     }
     var docBaseUrl = params.docBaseUrl || null;
 
     var action = destDict.get('A'), url, dest;
+    if (!isDict(action) && destDict.has('Dest')) {
+      // A /Dest entry should *only* contain a Name or an Array, but some bad
+      // PDF generators ignore that and treat it as an /A entry.
+      action = destDict.get('Dest');
+    }
+
     if (isDict(action)) {
-      var linkType = action.get('S').name;
-      switch (linkType) {
+      let actionType = action.get('S');
+      if (!isName(actionType)) {
+        warn('parseDestDictionary: Invalid type in Action dictionary.');
+        return;
+      }
+      let actionName = actionType.name;
+
+      switch (actionName) {
         case 'URI':
           url = action.get('URI');
           if (isName(url)) {
@@ -700,11 +760,10 @@ var Catalog = (function CatalogClosure() {
           }
           /* falls through */
         default:
-          warn('Catalog_parseDestDictionary: Unrecognized link type "' +
-               linkType + '".');
+          warn(`parseDestDictionary: Unsupported Action type "${actionName}".`);
           break;
       }
-    } else if (destDict.has('Dest')) { // Simple destination link.
+    } else if (destDict.has('Dest')) { // Simple destination.
       dest = destDict.get('Dest');
     }
 
@@ -775,7 +834,7 @@ var XRef = (function XRefClosure() {
 
       // get the root dictionary (catalog) object
       if (!(this.root = trailerDict.get('Root'))) {
-        error('Invalid root reference');
+        throw new FormatError('Invalid root reference');
       }
     },
 
@@ -795,7 +854,8 @@ var XRef = (function XRefClosure() {
 
       // Sanity check
       if (!isCmd(obj, 'trailer')) {
-        error('Invalid XRef table: could not find trailer dictionary');
+        throw new FormatError(
+          'Invalid XRef table: could not find trailer dictionary');
       }
       // Read trailer dictionary, e.g.
       // trailer
@@ -813,7 +873,8 @@ var XRef = (function XRefClosure() {
         dict = dict.dict;
       }
       if (!isDict(dict)) {
-        error('Invalid XRef table: could not parse trailer dictionary');
+        throw new FormatError(
+          'Invalid XRef table: could not parse trailer dictionary');
       }
       delete this.tableState;
 
@@ -852,7 +913,8 @@ var XRef = (function XRefClosure() {
         var first = tableState.firstEntryNum;
         var count = tableState.entryCount;
         if (!isInt(first) || !isInt(count)) {
-          error('Invalid XRef table: wrong types in subsection header');
+          throw new FormatError(
+            'Invalid XRef table: wrong types in subsection header');
         }
         // Inner loop is over objects themselves
         for (var i = tableState.entryNum; i < count; i++) {
@@ -875,7 +937,8 @@ var XRef = (function XRefClosure() {
           // Validate entry obj
           if (!isInt(entry.offset) || !isInt(entry.gen) ||
               !(entry.free || entry.uncompressed)) {
-            error('Invalid entry in XRef subsection: ' + first + ', ' + count);
+            throw new FormatError(
+              `Invalid entry in XRef subsection: ${first}, ${count}`);
           }
 
           // The first xref table entry, i.e. obj 0, should be free. Attempting
@@ -899,7 +962,8 @@ var XRef = (function XRefClosure() {
 
       // Sanity check: as per spec, first object must be free
       if (this.entries[0] && !this.entries[0].free) {
-        error('Invalid XRef table: unexpected first object');
+        throw new FormatError(
+          'Invalid XRef table: unexpected first object');
       }
       return obj;
     },
@@ -944,11 +1008,13 @@ var XRef = (function XRefClosure() {
         var n = entryRanges[1];
 
         if (!isInt(first) || !isInt(n)) {
-          error('Invalid XRef range fields: ' + first + ', ' + n);
+          throw new FormatError(
+            `Invalid XRef range fields: ${first}, ${n}`);
         }
         if (!isInt(typeFieldWidth) || !isInt(offsetFieldWidth) ||
             !isInt(generationFieldWidth)) {
-          error('Invalid XRef entry fields length: ' + first + ', ' + n);
+          throw new FormatError(
+            `Invalid XRef entry fields length: ${first}, ${n}`);
         }
         for (i = streamState.entryNum; i < n; ++i) {
           streamState.entryNum = i;
@@ -981,7 +1047,7 @@ var XRef = (function XRefClosure() {
             case 2:
               break;
             default:
-              error('Invalid XRef entry type: ' + type);
+              throw new FormatError(`Invalid XRef entry type: ${type}`);
           }
           if (!this.entries[first + i]) {
             this.entries[first + i] = entry;
@@ -1126,16 +1192,26 @@ var XRef = (function XRefClosure() {
         return dict;
       }
       // nothing helps
-      // calling error() would reject worker with an UnknownErrorException.
       throw new InvalidPDFException('Invalid PDF structure');
     },
 
     readXRef: function XRef_readXRef(recoveryMode) {
       var stream = this.stream;
+      // Keep track of already parsed XRef tables, to prevent an infinite loop
+      // when parsing corrupt PDF files where e.g. the /Prev entries create a
+      // circular dependency between tables (fixes bug1393476.pdf).
+      let startXRefParsedCache = Object.create(null);
 
       try {
         while (this.startXRefQueue.length) {
           var startXRef = this.startXRefQueue[0];
+
+          if (startXRefParsedCache[startXRef]) {
+            warn('readXRef - skipping XRef table since it was already parsed.');
+            this.startXRefQueue.shift();
+            continue;
+          }
+          startXRefParsedCache[startXRef] = true;
 
           stream.pos = startXRef + stream.start;
 
@@ -1167,17 +1243,17 @@ var XRef = (function XRefClosure() {
             if (!isInt(parser.getObj()) ||
                 !isCmd(parser.getObj(), 'obj') ||
                 !isStream(obj = parser.getObj())) {
-              error('Invalid XRef stream');
+              throw new FormatError('Invalid XRef stream');
             }
             dict = this.processXRefStream(obj);
             if (!this.topDict) {
               this.topDict = dict;
             }
             if (!dict) {
-              error('Failed to read XRef stream');
+              throw new FormatError('Failed to read XRef stream');
             }
           } else {
-            error('Invalid XRef stream header');
+            throw new FormatError('Invalid XRef stream header');
           }
 
           // Recursively get previous dictionary, if any
@@ -1223,7 +1299,9 @@ var XRef = (function XRefClosure() {
     },
 
     fetch: function XRef_fetch(ref, suppressEncryption) {
-      assert(isRef(ref), 'ref object is not a reference');
+      if (!isRef(ref)) {
+        throw new Error('ref object is not a reference');
+      }
       var num = ref.num;
       if (num in this.cache) {
         var cacheEntry = this.cache[num];
@@ -1260,7 +1338,7 @@ var XRef = (function XRefClosure() {
       var gen = ref.gen;
       var num = ref.num;
       if (xrefEntry.gen !== gen) {
-        error('inconsistent generation in XRef');
+        throw new FormatError('inconsistent generation in XRef');
       }
       var stream = this.stream.makeSubStream(xrefEntry.offset +
                                              this.stream.start);
@@ -1271,7 +1349,7 @@ var XRef = (function XRefClosure() {
       if (!isInt(obj1) || parseInt(obj1, 10) !== num ||
           !isInt(obj2) || parseInt(obj2, 10) !== gen ||
           !isCmd(obj3)) {
-        error('bad XRef entry');
+        throw new FormatError('bad XRef entry');
       }
       if (!isCmd(obj3, 'obj')) {
         // some bad PDFs use "obj1234" and really mean 1234
@@ -1281,7 +1359,7 @@ var XRef = (function XRefClosure() {
             return num;
           }
         }
-        error('bad XRef entry');
+        throw new FormatError('bad XRef entry');
       }
       if (this.encrypt && !suppressEncryption) {
         xrefEntry = parser.getObj(this.encrypt.createCipherTransform(num, gen));
@@ -1299,12 +1377,13 @@ var XRef = (function XRefClosure() {
       var tableOffset = xrefEntry.offset;
       var stream = this.fetch(new Ref(tableOffset, 0));
       if (!isStream(stream)) {
-        error('bad ObjStm stream');
+        throw new FormatError('bad ObjStm stream');
       }
       var first = stream.dict.get('First');
       var n = stream.dict.get('N');
       if (!isInt(first) || !isInt(n)) {
-        error('invalid first and n parameters for ObjStm stream');
+        throw new FormatError(
+          'invalid first and n parameters for ObjStm stream');
       }
       var parser = new Parser(new Lexer(stream), false, this);
       parser.allowStreams = true;
@@ -1313,12 +1392,14 @@ var XRef = (function XRefClosure() {
       for (i = 0; i < n; ++i) {
         num = parser.getObj();
         if (!isInt(num)) {
-          error('invalid object number in the ObjStm stream: ' + num);
+          throw new FormatError(
+            `invalid object number in the ObjStm stream: ${num}`);
         }
         nums.push(num);
         var offset = parser.getObj();
         if (!isInt(offset)) {
-          error('invalid object offset in the ObjStm stream: ' + offset);
+          throw new FormatError(
+            `invalid object offset in the ObjStm stream: ${offset}`);
         }
       }
       // read stream objects for cache
@@ -1337,7 +1418,7 @@ var XRef = (function XRefClosure() {
       }
       xrefEntry = entries[xrefEntry.gen];
       if (xrefEntry === undefined) {
-        error('bad XRef entry for compressed object');
+        throw new FormatError('bad XRef entry for compressed object');
       }
       return xrefEntry;
     },
@@ -1406,8 +1487,9 @@ var NameOrNumberTree = (function NameOrNumberTreeClosure() {
           var kids = obj.get('Kids');
           for (i = 0, n = kids.length; i < n; i++) {
             var kid = kids[i];
-            assert(!processed.has(kid),
-                   'Duplicate entry in "' + this._type + '" tree.');
+            if (processed.has(kid)) {
+              throw new FormatError(`Duplicate entry in "${this._type}" tree.`);
+            }
             queue.push(kid);
             processed.put(kid);
           }

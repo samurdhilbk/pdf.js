@@ -14,10 +14,10 @@
  */
 
 import {
-  assert, CMapCompressionType, createPromiseCapability, error,
-  FONT_IDENTITY_MATRIX, getLookupTableFactory, IDENTITY_MATRIX, ImageKind, info,
-  isArray, isNum, isString, NativeImageDecoding, OPS, TextRenderingMode,
-  UNSUPPORTED_FEATURES, Util, warn
+  AbortException, assert, CMapCompressionType, createPromiseCapability,
+  FONT_IDENTITY_MATRIX, FormatError, getLookupTableFactory, IDENTITY_MATRIX,
+  ImageKind, info, isArray, isNum, isString, NativeImageDecoding, OPS,
+  TextRenderingMode, UNSUPPORTED_FEATURES, Util, warn
 } from '../shared/util';
 import { CMapFactory, IdentityCMap } from './cmap';
 import { DecodeStream, JpegStream, Stream } from './stream';
@@ -673,7 +673,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
 
       var fontRef, xref = this.xref;
       if (font) { // Loading by ref.
-        assert(isRef(font));
+        if (!isRef(font)) {
+          throw new Error('The "font" object should be a reference.');
+        }
         fontRef = font;
       } else { // Loading by name.
         var fontRes = resources.get('Font');
@@ -866,7 +868,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
       resources = resources || Dict.empty;
       initialState = initialState || new EvalState();
 
-      assert(operatorList, 'getOperatorList: missing "operatorList" parameter');
+      if (!operatorList) {
+        throw new Error('getOperatorList: missing "operatorList" parameter');
+      }
 
       var self = this;
       var xref = this.xref;
@@ -911,9 +915,6 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
 
           switch (fn | 0) {
             case OPS.paintXObject:
-              if (args[0].code) {
-                break;
-              }
               // eagerly compile XForm objects
               var name = args[0].name;
               if (!name) {
@@ -928,10 +929,14 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
 
               var xobj = xobjs.get(name);
               if (xobj) {
-                assert(isStream(xobj), 'XObject should be a stream');
+                if (!isStream(xobj)) {
+                  throw new FormatError('XObject should be a stream');
+                }
 
                 var type = xobj.dict.get('Subtype');
-                assert(isName(type), 'XObject should have a Name subtype');
+                if (!isName(type)) {
+                  throw new FormatError('XObject should have a Name subtype');
+                }
 
                 if (type.name === 'Form') {
                   stateManager.save();
@@ -953,7 +958,8 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
                   info('Ignored XObject subtype PS');
                   continue;
                 } else {
-                  error('Unhandled XObject subtype ' + type.name);
+                  throw new FormatError(
+                    `Unhandled XObject subtype ${type.name}`);
                 }
               }
               break;
@@ -1086,10 +1092,14 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
 
             case OPS.shadingFill:
               var shadingRes = resources.get('Shading');
-              assert(shadingRes, 'No shading resource found');
+              if (!shadingRes) {
+                throw new FormatError('No shading resource found');
+              }
 
               var shading = shadingRes.get(args[0].name);
-              assert(shading, 'No shading object found');
+              if (!shading) {
+                throw new FormatError('No shading object found');
+              }
 
               var shadingFill = Pattern.parseShading(shading, null, xref,
                 resources, self.handler);
@@ -1618,10 +1628,6 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
               break;
             case OPS.paintXObject:
               flushTextContentItem();
-              if (args[0].code) {
-                break;
-              }
-
               if (!xobjs) {
                 xobjs = (resources.get('XObject') || Dict.empty);
               }
@@ -1635,10 +1641,14 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
               if (!xobj) {
                 break;
               }
-              assert(isStream(xobj), 'XObject should be a stream');
+              if (!isStream(xobj)) {
+                throw new FormatError('XObject should be a stream');
+              }
 
               var type = xobj.dict.get('Subtype');
-              assert(isName(type), 'XObject should have a Name subtype');
+              if (!isName(type)) {
+                throw new FormatError('XObject should have a Name subtype');
+              }
 
               if (type.name !== 'Form') {
                 skipEmptyXObjs[name] = true;
@@ -1727,6 +1737,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
         enqueueChunk();
         resolve();
       }).catch((reason) => {
+        if (reason instanceof AbortException) {
+          return;
+        }
         if (this.options.ignoreErrors) {
           // Error(s) in the TextContent -- allow text-extraction to continue.
           warn('getTextContent - ignoring errors during task: ' + task.name);
@@ -1791,14 +1804,15 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
               } else if (isName(data)) {
                 differences[index++] = data.name;
               } else {
-                error('Invalid entry in \'Differences\' array: ' + data);
+                throw new FormatError(
+                  `Invalid entry in 'Differences' array: ${data}`);
               }
             }
           }
         } else if (isName(encoding)) {
           baseEncodingName = encoding.name;
         } else {
-          error('Encoding is not a Name nor a Dict');
+          throw new FormatError('Encoding is not a Name nor a Dict');
         }
         // According to table 114 if the encoding is a named encoding it must be
         // one of these predefined encodings.
@@ -1975,7 +1989,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
           var cMap = properties.cMap;
           toUnicode = [];
           cMap.forEach(function(charcode, cid) {
-            assert(cid <= 0xffff, 'Max size of CID is 65,535');
+            if (cid > 0xffff) {
+              throw new FormatError('Max size of CID is 65,535');
+            }
             // e) Map the CID obtained in step (a) according to the CMap
             // obtained in step (d), producing a Unicode value.
             var ucs2 = ucs2CMap.lookup(cid);
@@ -2227,7 +2243,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
     preEvaluateFont: function PartialEvaluator_preEvaluateFont(dict) {
       var baseDict = dict;
       var type = dict.get('Subtype');
-      assert(isName(type), 'invalid font Subtype');
+      if (!isName(type)) {
+        throw new FormatError('invalid font Subtype');
+      }
 
       var composite = false;
       var uint8array;
@@ -2237,11 +2255,15 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
         //  - set the type according to the descendant font
         //  - get the FontDescriptor from the descendant font
         var df = dict.get('DescendantFonts');
-        assert(df, 'Descendant fonts are not specified');
+        if (!df) {
+          throw new FormatError('Descendant fonts are not specified');
+        }
         dict = (isArray(df) ? this.xref.fetchIfRef(df[0]) : df);
 
         type = dict.get('Subtype');
-        assert(isName(type), 'invalid font Subtype');
+        if (!isName(type)) {
+          throw new FormatError('invalid font Subtype');
+        }
         composite = true;
       }
 
@@ -2329,7 +2351,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
           // FontDescriptor was not required.
           // This case is here for compatibility.
           var baseFontName = dict.get('BaseFont');
-          assert(isName(baseFontName), 'Base font is not specified');
+          if (!isName(baseFontName)) {
+            throw new FormatError('Base font is not specified');
+          }
 
           // Using base font name as a font name.
           baseFontName = baseFontName.name.replace(/[,_]/g, '-');
@@ -2396,7 +2420,9 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
       }
       fontName = (fontName || baseFont);
 
-      assert(isName(fontName), 'invalid font name');
+      if (!isName(fontName)) {
+        throw new FormatError('invalid font name');
+      }
 
       var fontFile = descriptor.get('FontFile', 'FontFile2', 'FontFile3');
       if (fontFile) {
@@ -2433,7 +2459,7 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
         capHeight: descriptor.get('CapHeight'),
         flags: descriptor.get('Flags'),
         italicAngle: descriptor.get('ItalicAngle'),
-        coded: false,
+        isType3Font: false,
       };
 
       var cMapPromise;
@@ -2492,7 +2518,9 @@ var TranslatedFont = (function TranslatedFontClosure() {
       this.sent = true;
     },
     loadType3Data(evaluator, resources, parentOperatorList, task) {
-      assert(this.font.isType3Font);
+      if (!this.font.isType3Font) {
+        throw new Error('Must be a Type3 font.');
+      }
 
       if (this.type3Loaded) {
         return this.type3Loaded;
@@ -2995,7 +3023,9 @@ var EvaluatorPreprocessor = (function EvaluatorPreprocessorClosure() {
             args = [];
           }
           args.push(obj);
-          assert(args.length <= 33, 'Too many arguments');
+          if (args.length > 33) {
+            throw new FormatError('Too many arguments');
+          }
         }
       }
     },

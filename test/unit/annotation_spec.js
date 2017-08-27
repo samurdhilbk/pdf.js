@@ -20,31 +20,12 @@ import {
   AnnotationBorderStyleType, AnnotationFieldFlag, AnnotationFlag,
   AnnotationType, stringToBytes, stringToUTF8String
 } from '../../src/shared/util';
-import { Dict, isRef, Name, Ref } from '../../src/core/primitives';
+import { Dict, Name, Ref } from '../../src/core/primitives';
 import { Lexer, Parser } from '../../src/core/parser';
 import { StringStream } from '../../src/core/stream';
+import { XRefMock } from './test_utils';
 
 describe('annotation', function() {
-  function XRefMock(array) {
-    this.map = Object.create(null);
-    for (var elem in array) {
-      var obj = array[elem];
-      var ref = obj.ref, data = obj.data;
-      this.map[ref.toString()] = data;
-    }
-  }
-  XRefMock.prototype = {
-    fetch(ref) {
-      return this.map[ref.toString()];
-    },
-    fetchIfRef(obj) {
-      if (!isRef(obj)) {
-        return obj;
-      }
-      return this.fetch(obj);
-    },
-  };
-
   function PDFManagerMock(params) {
     this.docBaseUrl = params.docBaseUrl || null;
   }
@@ -708,6 +689,36 @@ describe('annotation', function() {
       expect(data.dest).toEqual([{ num: 17, gen: 0, }, { name: 'XYZ', },
                                  0, 841.89, null]);
     });
+
+    it('should correctly parse a Dest, which violates the specification ' +
+       'by containing a dictionary', function() {
+      let destDict = new Dict();
+      destDict.set('Type', Name.get('Action'));
+      destDict.set('S', Name.get('GoTo'));
+      destDict.set('D', 'page.157');
+
+      let annotationDict = new Dict();
+      annotationDict.set('Type', Name.get('Annot'));
+      annotationDict.set('Subtype', Name.get('Link'));
+      // The /Dest must be a Name or an Array, refer to ISO 32000-1:2008
+      // section 12.3.3, but there are PDF files where it's a dictionary.
+      annotationDict.set('Dest', destDict);
+
+      let annotationRef = new Ref(798, 0);
+      let xref = new XRefMock([
+        { ref: annotationRef, data: annotationDict, }
+      ]);
+
+      let annotation = annotationFactory.create(xref, annotationRef,
+                                                pdfManagerMock, idFactoryMock);
+      let data = annotation.data;
+      expect(data.annotationType).toEqual(AnnotationType.LINK);
+
+      expect(data.url).toBeUndefined();
+      expect(data.unsafeUrl).toBeUndefined();
+      expect(data.dest).toEqual('page.157');
+    });
+
   });
 
   describe('WidgetAnnotation', function() {

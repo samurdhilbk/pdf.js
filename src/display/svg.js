@@ -12,10 +12,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/* globals __non_webpack_require__ */
 
 import {
   createObjectURL, FONT_IDENTITY_MATRIX, IDENTITY_MATRIX, ImageKind, isArray,
-  isNum, OPS, Util, warn
+  isNodeJS, isNum, OPS, Util, warn
 } from '../shared/util';
 
 var SVGGraphics = function() {
@@ -97,6 +98,89 @@ var convertImgDataToPng = (function convertImgDataToPngClosure() {
     return (b << 16) | a;
   }
 
+  /**
+   * @param {Uint8Array} literals The input data.
+   * @returns {Uint8Array} The DEFLATE-compressed data stream in zlib format.
+   *   This is the required format for compressed streams in the PNG format:
+   *   http://www.libpng.org/pub/png/spec/1.2/PNG-Compression.html
+   */
+  function deflateSync(literals) {
+    if (!isNodeJS()) {
+      // zlib is certainly not available outside of Node.js. We can either use
+      // the pako library for client-side DEFLATE compression, or use the canvas
+      // API of the browser to obtain a more optimal PNG file.
+      return deflateSyncUncompressed(literals);
+    }
+    try {
+      // NOTE: This implementation is far from perfect, but already way better
+      // than not applying any compression.
+      //
+      // A better algorithm will try to choose a good predictor/filter and
+      // then choose a suitable zlib compression strategy (e.g. 3,Z_RLE).
+      //
+      // Node v0.11.12 zlib.deflateSync is introduced (and returns a Buffer).
+      // Node v3.0.0   Buffer inherits from Uint8Array.
+      // Node v8.0.0   zlib.deflateSync accepts Uint8Array as input.
+      var input;
+        // eslint-disable-next-line no-undef
+      if (parseInt(process.versions.node) >= 8) {
+        input = literals;
+      } else {
+        // eslint-disable-next-line no-undef
+        input = new Buffer(literals);
+      }
+      var output = __non_webpack_require__('zlib')
+        .deflateSync(input, { level: 9, });
+      return output instanceof Uint8Array ? output : new Uint8Array(output);
+    } catch (e) {
+      warn('Not compressing PNG because zlib.deflateSync is unavailable: ' + e);
+    }
+
+    return deflateSyncUncompressed(literals);
+  }
+
+  // An implementation of DEFLATE with compression level 0 (Z_NO_COMPRESSION).
+  function deflateSyncUncompressed(literals) {
+    var len = literals.length;
+    var maxBlockLength = 0xFFFF;
+
+    var deflateBlocks = Math.ceil(len / maxBlockLength);
+    var idat = new Uint8Array(2 + len + deflateBlocks * 5 + 4);
+    var pi = 0;
+    idat[pi++] = 0x78; // compression method and flags
+    idat[pi++] = 0x9c; // flags
+
+    var pos = 0;
+    while (len > maxBlockLength) {
+      // writing non-final DEFLATE blocks type 0 and length of 65535
+      idat[pi++] = 0x00;
+      idat[pi++] = 0xff;
+      idat[pi++] = 0xff;
+      idat[pi++] = 0x00;
+      idat[pi++] = 0x00;
+      idat.set(literals.subarray(pos, pos + maxBlockLength), pi);
+      pi += maxBlockLength;
+      pos += maxBlockLength;
+      len -= maxBlockLength;
+    }
+
+    // writing non-final DEFLATE blocks type 0
+    idat[pi++] = 0x01;
+    idat[pi++] = len & 0xff;
+    idat[pi++] = len >> 8 & 0xff;
+    idat[pi++] = (~len & 0xffff) & 0xff;
+    idat[pi++] = (~len & 0xffff) >> 8 & 0xff;
+    idat.set(literals.subarray(pos), pi);
+    pi += literals.length - pos;
+
+    var adler = adler32(literals, 0, literals.length); // checksum
+    idat[pi++] = adler >> 24 & 0xff;
+    idat[pi++] = adler >> 16 & 0xff;
+    idat[pi++] = adler >> 8 & 0xff;
+    idat[pi++] = adler & 0xff;
+    return idat;
+  }
+
   function encode(imgData, kind, forceDataSchema) {
     var width = imgData.width;
     var height = imgData.height;
@@ -162,43 +246,7 @@ var convertImgDataToPng = (function convertImgDataToPngClosure() {
       0x00 // interlace method
     ]);
 
-    var len = literals.length;
-    var maxBlockLength = 0xFFFF;
-
-    var deflateBlocks = Math.ceil(len / maxBlockLength);
-    var idat = new Uint8Array(2 + len + deflateBlocks * 5 + 4);
-    var pi = 0;
-    idat[pi++] = 0x78; // compression method and flags
-    idat[pi++] = 0x9c; // flags
-
-    var pos = 0;
-    while (len > maxBlockLength) {
-      // writing non-final DEFLATE blocks type 0 and length of 65535
-      idat[pi++] = 0x00;
-      idat[pi++] = 0xff;
-      idat[pi++] = 0xff;
-      idat[pi++] = 0x00;
-      idat[pi++] = 0x00;
-      idat.set(literals.subarray(pos, pos + maxBlockLength), pi);
-      pi += maxBlockLength;
-      pos += maxBlockLength;
-      len -= maxBlockLength;
-    }
-
-    // writing non-final DEFLATE blocks type 0
-    idat[pi++] = 0x01;
-    idat[pi++] = len & 0xff;
-    idat[pi++] = len >> 8 & 0xff;
-    idat[pi++] = (~len & 0xffff) & 0xff;
-    idat[pi++] = (~len & 0xffff) >> 8 & 0xff;
-    idat.set(literals.subarray(pos), pi);
-    pi += literals.length - pos;
-
-    var adler = adler32(literals, 0, literals.length); // checksum
-    idat[pi++] = adler >> 24 & 0xff;
-    idat[pi++] = adler >> 16 & 0xff;
-    idat[pi++] = adler >> 8 & 0xff;
-    idat[pi++] = adler & 0xff;
+    var idat = deflateSync(literals);
 
     // PNG will consists: header, IHDR+data, IDAT+data, and IEND.
     var pngLength = PNG_HEADER.length + (CHUNK_WRAPPER_SIZE * 3) +
@@ -514,6 +562,9 @@ SVGGraphics = (function SVGGraphicsClosure() {
             this.setTextMatrix(args[0], args[1], args[2],
                                args[3], args[4], args[5]);
             break;
+          case OPS.setTextRise:
+            this.setTextRise(args[0]);
+            break;
           case OPS.setLineWidth:
             this.setLineWidth(args[0]);
             break;
@@ -694,15 +745,23 @@ SVGGraphics = (function SVGGraphicsClosure() {
           x += -glyph * fontSize * 0.001;
           continue;
         }
-        current.xcoords.push(current.x + x * textHScale);
 
         var width = glyph.width;
         var character = glyph.fontChar;
         var spacing = (glyph.isSpace ? wordSpacing : 0) + charSpacing;
         var charWidth = width * widthAdvanceScale + spacing * fontDirection;
-        x += charWidth;
 
+        if (!glyph.isInFont && !font.missingFile) {
+          x += charWidth;
+          // TODO: To assist with text selection, we should replace the missing
+          // character with a space character if charWidth is not zero.
+          // But we cannot just do "character = ' '", because the ' ' character
+          // might actually map to a different glyph.
+          continue;
+        }
+        current.xcoords.push(current.x + x * textHScale);
         current.tspan.textContent += character;
+        x += charWidth;
       }
       if (vertical) {
         current.y -= x * textHScale;
@@ -726,9 +785,17 @@ SVGGraphics = (function SVGGraphicsClosure() {
         current.tspan.setAttributeNS(null, 'fill', current.fillColor);
       }
 
+      // Include the text rise in the text matrix since the `pm` function
+      // creates the SVG element's `translate` entry (work on a copy to avoid
+      // altering the original text matrix).
+      let textMatrix = current.textMatrix;
+      if (current.textRise !== 0) {
+        textMatrix = textMatrix.slice();
+        textMatrix[5] += current.textRise;
+      }
+
       current.txtElement.setAttributeNS(null, 'transform',
-                                        pm(current.textMatrix) +
-                                        ' scale(1, -1)');
+                                        pm(textMatrix) + ' scale(1, -1)');
       current.txtElement.setAttributeNS(XML_NS, 'xml:space', 'preserve');
       current.txtElement.appendChild(current.tspan);
       current.txtgrp.appendChild(current.txtElement);

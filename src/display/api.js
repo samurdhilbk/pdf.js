@@ -12,11 +12,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals requirejs, __pdfjsdev_webpack__ */
+/* globals requirejs, __non_webpack_require__ */
 
 import {
-  createPromiseCapability, deprecated, error, getVerbosityLevel, globalScope,
-  info, InvalidPDFException, isArray, isArrayBuffer, isInt, isSameOrigin,
+  assert, createPromiseCapability, deprecated, getVerbosityLevel,
+  info, InvalidPDFException, isArrayBuffer, isInt, isSameOrigin,
   loadJpegStream, MessageHandler, MissingPDFException, NativeImageDecoding,
   PageViewport, PasswordException, StatTimer, stringToBytes,
   UnexpectedResponseException, UnknownErrorException, Util, warn
@@ -27,7 +27,9 @@ import {
 } from './dom_utils';
 import { FontFaceObject, FontLoader } from './font_loader';
 import { CanvasGraphics } from './canvas';
+import globalScope from '../shared/global_scope';
 import { Metadata } from './metadata';
+import { PDFDataTransportStream } from './transport_stream';
 
 var DEFAULT_RANGE_CHUNK_SIZE = 65536; // 2^16 = 65536
 
@@ -43,21 +45,19 @@ var pdfjsFilePath =
 
 var fakeWorkerFilesLoader = null;
 var useRequireEnsure = false;
-// The if below protected by __pdfjsdev_webpack__ check from webpack parsing.
 if (typeof PDFJSDev !== 'undefined' &&
-    PDFJSDev.test('GENERIC && !SINGLE_FILE') &&
-    typeof __pdfjsdev_webpack__ === 'undefined') {
+    PDFJSDev.test('GENERIC && !SINGLE_FILE')) {
   // For GENERIC build we need add support of different fake file loaders
   // for different  frameworks.
   if (typeof window === 'undefined') {
     // node.js - disable worker and set require.ensure.
     isWorkerDisabled = true;
-    if (typeof require.ensure === 'undefined') {
-      require.ensure = require('node-ensure');
+    if (typeof __non_webpack_require__.ensure === 'undefined') {
+      __non_webpack_require__.ensure = __non_webpack_require__('node-ensure');
     }
     useRequireEnsure = true;
-  } else if (typeof require !== 'undefined' &&
-             typeof require.ensure === 'function') {
+  } else if (typeof __non_webpack_require__ !== 'undefined' &&
+             typeof __non_webpack_require__.ensure === 'function') {
     useRequireEnsure = true;
   }
   if (typeof requirejs !== 'undefined' && requirejs.toUrl) {
@@ -66,12 +66,12 @@ if (typeof PDFJSDev !== 'undefined' &&
   var dynamicLoaderSupported =
     typeof requirejs !== 'undefined' && requirejs.load;
   fakeWorkerFilesLoader = useRequireEnsure ? (function (callback) {
-    require.ensure([], function () {
+    __non_webpack_require__.ensure([], function () {
       var worker;
       if (typeof PDFJSDev !== 'undefined' && PDFJSDev.test('LIB')) {
-        worker = require('../pdf.worker.js');
+        worker = __non_webpack_require__('../pdf.worker.js');
       } else {
-        worker = require('./pdf.worker.js');
+        worker = __non_webpack_require__('./pdf.worker.js');
       }
       callback(worker.WorkerMessageHandler);
     });
@@ -80,6 +80,17 @@ if (typeof PDFJSDev !== 'undefined' &&
       callback(worker.WorkerMessageHandler);
     });
   }) : null;
+}
+
+/** @type IPDFStream */
+var PDFNetworkStream;
+
+/**
+ * Sets PDFNetworkStream class to be used as alternative PDF data transport.
+ * @param {IPDFStream} cls - the PDF data transport.
+ */
+function setPDFNetworkStreamClass(cls) {
+  PDFNetworkStream = cls;
 }
 
 /**
@@ -198,11 +209,12 @@ function getDocument(src, pdfDataRangeTransport,
     source = { range: src, };
   } else {
     if (typeof src !== 'object') {
-      error('Invalid parameter in getDocument, need either Uint8Array, ' +
-        'string or a parameter object');
+      throw new Error('Invalid parameter in getDocument, ' +
+                      'need either Uint8Array, string or a parameter object');
     }
     if (!src.url && !src.data && !src.range) {
-      error('Invalid parameter object: need either .data, .range or .url');
+      throw new Error(
+        'Invalid parameter object: need either .data, .range or .url');
     }
 
     source = src;
@@ -235,8 +247,9 @@ function getDocument(src, pdfDataRangeTransport,
       } else if (isArrayBuffer(pdfBytes)) {
         params[key] = new Uint8Array(pdfBytes);
       } else {
-        error('Invalid PDF binary data: either typed array, string or ' +
-              'array-like object is expected in the data property.');
+        throw new Error('Invalid PDF binary data: either typed array, ' +
+                        'string or array-like object is expected in the ' +
+                        'data property.');
       }
       continue;
     } else if (key === 'CMapReaderFactory') {
@@ -281,8 +294,20 @@ function getDocument(src, pdfDataRangeTransport,
       if (task.destroyed) {
         throw new Error('Loading aborted');
       }
+
+      let networkStream;
+      if (rangeTransport) {
+        networkStream = new PDFDataTransportStream(params, rangeTransport);
+      } else if (!params.data) {
+        networkStream = new PDFNetworkStream({
+          source: params,
+          disableRange: getDefaultSetting('disableRange'),
+        });
+      }
+
       var messageHandler = new MessageHandler(docId, workerId, worker.port);
-      var transport = new WorkerTransport(messageHandler, task, rangeTransport,
+      messageHandler.postMessageTransfers = worker.postMessageTransfers;
+      var transport = new WorkerTransport(messageHandler, task, networkStream,
                                           CMapReaderFactory);
       task._transport = transport;
       messageHandler.send('Ready', null);
@@ -316,8 +341,14 @@ function _fetchDocument(worker, source, pdfDataRangeTransport, docId) {
   }
   return worker.messageHandler.sendWithPromise('GetDocRequest', {
     docId,
-    source,
-    disableRange: getDefaultSetting('disableRange'),
+    source: {
+      data: source.data,
+      url: source.url,
+      password: source.password,
+      disableAutoFetch: source.disableAutoFetch,
+      rangeChunkSize: source.rangeChunkSize,
+      length: source.length,
+    },
     maxImageSize: getDefaultSetting('maxImageSize'),
     disableFontFace: getDefaultSetting('disableFontFace'),
     disableCreateObjectURL: getDefaultSetting('disableCreateObjectURL'),
@@ -567,6 +598,13 @@ var PDFDocumentProxy = (function PDFDocumentProxyClosure() {
      */
     getPageLabels: function PDFDocumentProxy_getPageLabels() {
       return this.transport.getPageLabels();
+    },
+    /**
+     * @return {Promise} A promise that is resolved with a {string} containing
+     *   the PageMode name.
+     */
+    getPageMode() {
+      return this.transport.getPageMode();
     },
     /**
      * @return {Promise} A promise that is resolved with a lookup table for
@@ -1145,7 +1183,7 @@ class LoopbackPort {
         cloned.set(value, result);
         return result;
       }
-      result = isArray(value) ? [] : {};
+      result = Array.isArray(value) ? [] : {};
       cloned.set(value, result); // adding to cache now for cyclic references
       // Cloning all value and object properties, however ignoring properties
       // defined via getter.
@@ -1214,7 +1252,7 @@ var PDFWorker = (function PDFWorkerClosure() {
         pdfjsFilePath) {
       return pdfjsFilePath.replace(/(\.(?:min\.)?js)(\?.*)?$/i, '.worker$1$2');
     }
-    error('No PDFJS.workerSrc specified');
+    throw new Error('No PDFJS.workerSrc specified');
   }
 
   let fakeWorkerFilesLoadedCapability;
@@ -1231,9 +1269,7 @@ var PDFWorker = (function PDFWorkerClosure() {
     // pdf.worker.js file is needed.
     if (typeof PDFJSDev === 'undefined' || !PDFJSDev.test('PRODUCTION')) {
       if (typeof SystemJS === 'object') {
-        Promise.all([SystemJS.import('pdfjs/core/network'),
-                     SystemJS.import('pdfjs/core/worker')]).then((modules) => {
-          var worker = modules[1];
+        SystemJS.import('pdfjs/core/worker').then((worker) => {
           WorkerMessageHandler = worker.WorkerMessageHandler;
           fakeWorkerFilesLoadedCapability.resolve(WorkerMessageHandler);
         });
@@ -1247,7 +1283,6 @@ var PDFWorker = (function PDFWorkerClosure() {
       }
     } else if (PDFJSDev.test('SINGLE_FILE')) {
       var pdfjsCoreWorker = require('../core/worker.js');
-      require('../core/network.js');
       WorkerMessageHandler = pdfjsCoreWorker.WorkerMessageHandler;
       fakeWorkerFilesLoadedCapability.resolve(WorkerMessageHandler);
     } else {
@@ -1278,6 +1313,7 @@ var PDFWorker = (function PDFWorkerClosure() {
 
     this.name = name;
     this.destroyed = false;
+    this.postMessageTransfers = true;
 
     this._readyCapability = createPromiseCapability();
     this._port = null;
@@ -1293,7 +1329,7 @@ var PDFWorker = (function PDFWorkerClosure() {
     this._initialize();
   }
 
-  PDFWorker.prototype =  /** @lends PDFWorker.prototype */ {
+  PDFWorker.prototype = /** @lends PDFWorker.prototype */ {
     get promise() {
       return this._readyCapability.promise;
     },
@@ -1374,6 +1410,7 @@ var PDFWorker = (function PDFWorkerClosure() {
               this._port = worker;
               this._webWorker = worker;
               if (!data.supportTransfers) {
+                this.postMessageTransfers = false;
                 isPostMessageTransfersDisabled = true;
               }
               this._readyCapability.resolve();
@@ -1483,6 +1520,7 @@ var PDFWorker = (function PDFWorkerClosure() {
         this._webWorker.terminate();
         this._webWorker = null;
       }
+      pdfWorkerPorts.delete(this._port);
       this._port = null;
       if (this._messageHandler) {
         this._messageHandler.destroy();
@@ -1506,11 +1544,10 @@ var PDFWorker = (function PDFWorkerClosure() {
  * @ignore
  */
 var WorkerTransport = (function WorkerTransportClosure() {
-  function WorkerTransport(messageHandler, loadingTask, pdfDataRangeTransport,
+  function WorkerTransport(messageHandler, loadingTask, networkStream,
                            CMapReaderFactory) {
     this.messageHandler = messageHandler;
     this.loadingTask = loadingTask;
-    this.pdfDataRangeTransport = pdfDataRangeTransport;
     this.commonObjs = new PDFObjects();
     this.fontLoader = new FontLoader(loadingTask.docId);
     this.CMapReaderFactory = new CMapReaderFactory({
@@ -1521,6 +1558,10 @@ var WorkerTransport = (function WorkerTransportClosure() {
     this.destroyed = false;
     this.destroyCapability = null;
     this._passwordCapability = null;
+
+    this._networkStream = networkStream;
+    this._fullReader = null;
+    this._lastProgress = null;
 
     this.pageCache = [];
     this.pagePromises = [];
@@ -1557,10 +1598,10 @@ var WorkerTransport = (function WorkerTransportClosure() {
       waitOn.push(terminated);
       Promise.all(waitOn).then(() => {
         this.fontLoader.clear();
-        if (this.pdfDataRangeTransport) {
-          this.pdfDataRangeTransport.abort();
-          this.pdfDataRangeTransport = null;
+        if (this._networkStream) {
+          this._networkStream.cancelAllRequests();
         }
+
         if (this.messageHandler) {
           this.messageHandler.destroy();
           this.messageHandler = null;
@@ -1574,32 +1615,92 @@ var WorkerTransport = (function WorkerTransportClosure() {
       var messageHandler = this.messageHandler;
       var loadingTask = this.loadingTask;
 
-      var pdfDataRangeTransport = this.pdfDataRangeTransport;
-      if (pdfDataRangeTransport) {
-        pdfDataRangeTransport.addRangeListener(function(begin, chunk) {
-          messageHandler.send('OnDataRange', {
-            begin,
-            chunk,
+      messageHandler.on('GetReader', function(data, sink) {
+        assert(this._networkStream);
+        this._fullReader = this._networkStream.getFullReader();
+        this._fullReader.onProgress = (evt) => {
+          this._lastProgress = {
+            loaded: evt.loaded,
+            total: evt.total,
+          };
+        };
+        sink.onPull = () => {
+          this._fullReader.read().then(function({ value, done, }) {
+            if (done) {
+              sink.close();
+              return;
+            }
+            assert(isArrayBuffer(value));
+            // Enqueue data chunk into sink, and transfer it
+            // to other side as `Transferable` object.
+            sink.enqueue(new Uint8Array(value), 1, [value]);
+          }).catch((reason) => {
+            sink.error(reason);
           });
-        });
+        };
 
-        pdfDataRangeTransport.addProgressListener(function(loaded) {
-          messageHandler.send('OnDataProgress', {
-            loaded,
+        sink.onCancel = (reason) => {
+          this._fullReader.cancel(reason);
+        };
+      }, this);
+
+      messageHandler.on('ReaderHeadersReady', function(data) {
+        let headersCapability = createPromiseCapability();
+        let fullReader = this._fullReader;
+        fullReader.headersReady.then(() => {
+          // If stream or range are disabled, it's our only way to report
+          // loading progress.
+          if (!fullReader.isStreamingSupported ||
+              !fullReader.isRangeSupported) {
+            if (this._lastProgress) {
+              let loadingTask = this.loadingTask;
+              if (loadingTask.onProgress) {
+                loadingTask.onProgress(this._lastProgress);
+              }
+            }
+            fullReader.onProgress = (evt) => {
+              let loadingTask = this.loadingTask;
+              if (loadingTask.onProgress) {
+                loadingTask.onProgress({
+                  loaded: evt.loaded,
+                  total: evt.total,
+                });
+              }
+            };
+          }
+
+          headersCapability.resolve({
+            isStreamingSupported: fullReader.isStreamingSupported,
+            isRangeSupported: fullReader.isRangeSupported,
+            contentLength: fullReader.contentLength,
           });
-        });
+        }, headersCapability.reject);
 
-        pdfDataRangeTransport.addProgressiveReadListener(function(chunk) {
-          messageHandler.send('OnDataRange', {
-            chunk,
+        return headersCapability.promise;
+      }, this);
+
+      messageHandler.on('GetRangeReader', function(data, sink) {
+        assert(this._networkStream);
+        let _rangeReader =
+          this._networkStream.getRangeReader(data.begin, data.end);
+
+        sink.onPull = () => {
+          _rangeReader.read().then(function({ value, done, }) {
+            if (done) {
+              sink.close();
+              return;
+            }
+            assert(isArrayBuffer(value));
+            sink.enqueue(new Uint8Array(value), 1, [value]);
+          }).catch((reason) => {
+            sink.error(reason);
           });
-        });
+        };
 
-        messageHandler.on('RequestDataRange',
-          function transportDataRange(data) {
-            pdfDataRangeTransport.requestDataRange(data.begin, data.end);
-          }, this);
-      }
+        sink.onCancel = (reason) => {
+          _rangeReader.cancel(reason);
+        };
+      }, this);
 
       messageHandler.on('GetDoc', function transportDoc(data) {
         var pdfInfo = data.pdfInfo;
@@ -1661,9 +1762,6 @@ var WorkerTransport = (function WorkerTransportClosure() {
       }, this);
 
       messageHandler.on('PDFManagerReady', function transportPage(data) {
-        if (this.pdfDataRangeTransport) {
-          this.pdfDataRangeTransport.transportReady();
-        }
       }, this);
 
       messageHandler.on('StartRenderPage', function transportRender(data) {
@@ -1730,7 +1828,7 @@ var WorkerTransport = (function WorkerTransportClosure() {
             this.commonObjs.resolve(id, data[2]);
             break;
           default:
-            error('Got unknown common object type ' + type);
+            throw new Error(`Got unknown common object type ${type}`);
         }
       }, this);
 
@@ -1765,7 +1863,7 @@ var WorkerTransport = (function WorkerTransportClosure() {
             }
             break;
           default:
-            error('Got unknown object type ' + type);
+            throw new Error(`Got unknown object type ${type}`);
         }
       }, this);
 
@@ -1794,7 +1892,7 @@ var WorkerTransport = (function WorkerTransportClosure() {
         if (intentState.displayReadyCapability) {
           intentState.displayReadyCapability.reject(data.error);
         } else {
-          error(data.error);
+          throw new Error(data.error);
         }
 
         if (intentState.operatorList) {
@@ -1939,6 +2037,10 @@ var WorkerTransport = (function WorkerTransportClosure() {
       return this.messageHandler.sendWithPromise('GetPageLabels', null);
     },
 
+    getPageMode() {
+      return this.messageHandler.sendWithPromise('GetPageMode', null);
+    },
+
     getAttachments: function WorkerTransport_getAttachments() {
       return this.messageHandler.sendWithPromise('GetAttachments', null);
     },
@@ -2038,7 +2140,7 @@ var PDFObjects = (function PDFObjectsClosure() {
       // If there isn't an object yet or the object isn't resolved, then the
       // data isn't ready yet!
       if (!obj || !obj.resolved) {
-        error('Requesting object that isn\'t resolved yet ' + objId);
+        throw new Error(`Requesting object that isn't resolved yet ${objId}`);
       }
 
       return obj.data;
@@ -2324,6 +2426,7 @@ export {
   PDFWorker,
   PDFDocumentProxy,
   PDFPageProxy,
+  setPDFNetworkStreamClass,
   _UnsupportedManager,
   version,
   build,
