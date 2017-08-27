@@ -21,7 +21,9 @@ import {
   createPromiseCapability, CustomStyle, PDFJS, RenderingCancelledException,
   SVGGraphics
 } from 'pdfjs-lib';
+import { AnnotationLayerBuilder } from './annotation_layer_builder';
 import { getGlobalEventBus } from './dom_events';
+import { SimpleLinkService } from './pdf_link_service';
 import { RenderingStates } from './pdf_rendering_queue';
 
 /**
@@ -66,6 +68,7 @@ class PDFPageView {
     this.renderInteractiveForms = options.renderInteractiveForms || false;
 
     this.eventBus = options.eventBus || getGlobalEventBus();
+    this.linkService = options.linkService || new SimpleLinkService();
     this.renderingQueue = options.renderingQueue;
     this.textLayerFactory = options.textLayerFactory;
     this.annotationLayerFactory = options.annotationLayerFactory;
@@ -98,7 +101,7 @@ class PDFPageView {
   setPdfPage(pdfPage) {
     this.pdfPage = pdfPage;
     this.pdfPageRotate = pdfPage.rotate;
-
+    this.linkService.cachePageRef(this.id, pdfPage.ref);
     let totalRotation = (this.rotation + this.pdfPageRotate) % 360;
     this.viewport = pdfPage.getViewport(this.scale * CSS_UNITS,
                                         totalRotation);

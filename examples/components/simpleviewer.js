@@ -29,7 +29,7 @@ PDFJS.workerSrc = '../../node_modules/pdfjs-dist/build/pdf.worker.js';
 // PDFJS.cMapUrl = '../../node_modules/pdfjs-dist/cmaps/';
 // PDFJS.cMapPacked = true;
 
-var DEFAULT_URL = '../../web/compressed.tracemonkey-pldi-09.pdf';
+var DEFAULT_URL = '../../web/pdf_open_parameters.pdf';
 var SEARCH_FOR = ''; // try 'Mozilla';
 
 var container = document.getElementById('viewerContainer');

@@ -99,6 +99,18 @@ class DefaultAnnotationLayerFactory {
    * @param {IL10n} l10n
    * @returns {AnnotationLayerBuilder}
    */
+  createCustomAnnotationLayerBuilder(pageDiv, pdfPage,
+                               renderInteractiveForms = false, linkService,
+                               l10n = NullL10n) {
+    return new AnnotationLayerBuilder({
+      pageDiv,
+      pdfPage,
+      renderInteractiveForms,
+      linkService: linkService,
+      l10n,
+    });
+  }
+
   createAnnotationLayerBuilder(pageDiv, pdfPage,
                                renderInteractiveForms = false,
                                l10n = NullL10n) {
