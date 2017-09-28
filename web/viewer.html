@@ -39,9 +39,14 @@ See https://github.com/adobe-type-tools/cmap-resources
 <!--#include viewer-snippet-chrome-extension.html-->
 <!--#endif-->
 
+
+
     <link rel="stylesheet" href="viewer.css">
 <!--#if !PRODUCTION-->
     <link rel="resource" type="application/l10n" href="locale/locale.properties">
+    <link rel="stylesheet"  href="transition.min.css">
+    <link rel="stylesheet"  href="dimmer.min.css">
+    <link rel="stylesheet"  href="modal.min.css">
 <!--#endif-->
 
 <!--#if !PRODUCTION-->
@@ -55,6 +60,32 @@ See https://github.com/adobe-type-tools/cmap-resources
 
 <!--#if !MINIFIED -->
     <script src="viewer.js"></script>
+
+    <style type="text/css">
+    .def-item{
+      font-size: 15px;
+      padding: 5px;
+      border-bottom: 1px solid rgba(2,3,2,0.1);
+    }
+
+    .def-index{
+      font-weight: bold;
+      display: inline-block;
+      vertical-align: top;
+      width: 3%;
+    }
+    .def-description{
+      display: inline-block;
+      width: 97%;
+    }
+    </style>
+
+    <script src="jquery-3.2.1.min.js"></script>
+    <script src="transition.min.js"></script>
+    <script src="dimmer.min.js"></script>
+    <script src="modal.min.js"></script>
+    <script src="dictionary.js"></script>
+    
 <!--#else-->
 <!--#include viewer-snippet-minified.html-->
 <!--#endif-->
@@ -62,6 +93,13 @@ See https://github.com/adobe-type-tools/cmap-resources
   </head>
 
   <body tabindex="1" class="loadingInProgress">
+
+    <div class="ui modal">
+      <div class="header" id="dict-term"></div>
+      <div class="content" id="dict-definition-list">
+      </div>
+    </div>
+
     <div id="outerContainer">
 
       <div id="sidebarContainer">
